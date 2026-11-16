@@ -1,0 +1,148 @@
+# Nexus 9 · HGTV 定制与上游同步工具
+
+这是为 **Nexus 9（Google/HTC Flounder，Tegra K1）** 使用的 [hongguoTV](https://github.com/N3urda/hongguoTV) 定制记录和更新辅助工具仓库。
+
+本仓库保存自动同步脚本、构建说明和定制原因；**不包含 hongguoTV 原项目源码，也不分发 APK**。请先克隆原项目，再把本仓库中的 `update_hgtv.sh` 放到原项目仓库根目录执行。
+
+## 为什么要做这些修改
+
+hongguoTV 原本以电视设备为主要交互场景，界面中的焦点移动、方向键导航和遥控器操作符合 Android TV 的使用习惯。但 Nexus 9 是一台平板：它有触摸屏，主要操作方式是手指点击，而不是十字方向键。直接使用原版时，部分界面仍带有明显的电视焦点操作逻辑，触摸使用不够自然。
+
+这次定制的目标不是重写播放器或改变内容功能，而是**让同一套应用在 Nexus 9 平板上更符合触摸操作，同时尽量保留原有播放和输入行为**：
+
+- **桌面名称改为 HGTV**：便于在平板桌面上识别这是经过 Nexus 9 适配的定制版本，避免与原版应用混淆。应用包名保持不变，减少对现有安装身份和数据连续性的影响。
+- **将主要界面交互调整为触摸点击**：电视界面常见的焦点导航对触摸平板并不直观。调整相关 Kotlin 界面的点击/触摸处理，让用户直接点选内容和操作控件，不必先用方向键移动焦点。
+- **播放器画面单击显示/隐藏播放菜单**：视频播放时，画面本身是最自然的触控入口。点击视频区域即可呼出或收起播放菜单，减少寻找屏幕边缘按钮的操作。
+- **保留文本输入与播放器按键处理**：搜索框等 EditText 仍需正常输入；播放器的媒体按键和 seek 处理也不能被通用触摸改动覆盖。因此这些路径在适配时予以保护。
+- **不改动进度条行为**：进度条和拖动播放属于独立交互，本次没有必要为了触摸适配而改变它，避免引入额外播放回归风险。
+
+这些改动以实际使用问题为依据，优先处理平板上最明显的交互不匹配，并尽量缩小改动范围。
+
+## 已验证的定制内容
+
+| 项目 | 实施内容 | 验证情况 |
+|---|---|---|
+| 应用名称 | 桌面标签显示为 `HGTV` | Nexus 9 实机确认 |
+| 页面交互 | 17 个 Kotlin 文件中应用触摸点击模式，累计约 52 处调整 | 用户确认操作表现正常 |
+| 播放器菜单 | 点击视频区域显示或隐藏菜单 | Nexus 9 实机确认 |
+| 文本与按键 | 保留 EditText 输入及播放器媒体/seek 按键处理 | 纳入实机验证 |
+| 进度条 | 不修改原有进度条 | 按定制范围保留 |
+
+详细记录见 [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md)。
+
+## 仓库关系
+
+- 上游源码：[`N3urda/hongguoTV`](https://github.com/N3urda/hongguoTV)
+- 本地定制分支：`hgtv-custom`
+- 上游跟踪分支：`origin/main`
+- 同步脚本预期在原项目仓库根目录运行，并要求当前分支名为 `hgtv-custom`。
+
+本仓库只是脚本与文档的发布位置。脚本中的 Git 操作针对当前目录所在的 **hongguoTV 源码仓库**，不是针对本工具仓库。
+
+## 环境要求
+
+已使用的构建环境：
+
+- Ubuntu 24.04.4 LTS
+- Gradle 8.14.3，路径：`$HOME/软件/gradle-8.14.3/bin/gradle`
+- Android 工程及其所需 SDK/构建依赖已按原项目要求配置
+- Nexus 9 推荐使用 `armeabi-v7a` 32 位 APK
+
+脚本将 Gradle 路径写在变量 `GRADLE` 中。如果你的 Gradle 安装位置不同，请先编辑脚本中的该路径。
+
+## 首次准备
+
+1. 克隆上游源码并进入项目目录：
+
+   ```bash
+   git clone https://github.com/N3urda/hongguoTV.git
+   cd hongguoTV
+   ```
+
+2. 按照本仓库的定制记录，将已经验证的本地修改应用到源码，并将它们提交到 `hgtv-custom` 分支。若你使用的是已经完成定制的本地工作副本，不要重复应用修改。
+
+3. 确认远程和分支设置：
+
+   ```bash
+   git remote -v
+   git switch hgtv-custom
+   git fetch origin
+   ```
+
+   `hgtv-custom` 应当是从上游版本派生、包含本地定制提交的分支；远程上游分支为 `origin/main`。
+
+4. 将本仓库的 `update_hgtv.sh` 下载或复制到 hongguoTV 仓库根目录，并赋予执行权限：
+
+   ```bash
+   chmod +x update_hgtv.sh
+   ```
+
+## 日常同步与构建
+
+在 **hongguoTV 源码仓库根目录**运行：
+
+```bash
+./update_hgtv.sh
+```
+
+脚本依次执行：
+
+1. 检查当前分支是否为 `hgtv-custom`。
+2. 检查工作区是否干净；有未提交改动时停止，避免覆盖用户正在进行的工作。
+3. 检查 Gradle 可执行文件。
+4. 获取 `origin` 最新远程引用。
+5. 将本地定制分支 rebase 到 `origin/main`。如果需要移动分支历史，先创建 `backup/pre-update-时间戳` 备份分支。
+6. 如果 rebase 出现冲突，停止并提示解决方式，不会自动猜测如何合并。
+7. 执行 ` :app:assembleDebug ` 构建任务。
+8. 显示 Nexus 9 对应的 32 位 APK 路径；若预期位置不存在，则列出找到的 APK 文件。
+
+成功构建后的预期 APK：
+
+```
+kotlin-tv/app/build/platform/outputs/apk/debug/app-armeabi-v7a-debug.apk
+```
+
+也可以按需安装（请确认设备已连接并启用 ADB）：
+
+```bash
+adb install -r kotlin-tv/app/build/platform/outputs/apk/debug/app-armeabi-v7a-debug.apk
+```
+
+## 遇到 rebase 冲突
+
+脚本会停止，并保留更新前的备份分支。先查看：
+
+```bash
+git status
+git diff
+```
+
+手动解决冲突后：
+
+```bash
+git add <已解决的文件>
+git rebase --continue
+```
+
+如果决定放弃本次同步：
+
+```bash
+git rebase --abort
+```
+
+冲突解决后，再检查工作区和构建结果。不要在不了解冲突内容时直接选择全部使用上游或全部使用本地版本。
+
+## 安全与范围说明
+
+- 脚本只在本地源码仓库执行 Git 同步和 Gradle 构建，不会自动推送提交到 GitHub。
+- 脚本要求工作区干净；请先提交或备份自己的修改。
+- 自动 rebase 前会建立本地备份分支；备份分支不会自动清理。
+- 脚本不会自动安装 APK，也不会后台定时运行；需要手动执行。
+- 不要把访问令牌、签名密钥、个人配置或不必要的构建产物提交到仓库。
+- 本项目是个人设备适配记录，非 hongguoTV 官方发行版。上游更新可能改变界面结构或构建方式，更新后应在 Nexus 9 上重新测试。
+
+## 文件
+
+- `update_hgtv.sh`：上游同步与构建脚本。
+- `CUSTOMIZATIONS.md`：定制内容、修改动机和验证记录。
+- `.gitignore`：忽略本地构建产物、密钥和备份文件。
