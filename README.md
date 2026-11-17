@@ -35,7 +35,7 @@ hongguoTV 原本以电视设备为主要交互场景，界面中的焦点移动�
 | 文本与按键 | 保留 EditText 输入及播放器媒体/seek 按键处理 | 纳入实机验证 |
 | 进度条 | 不修改原有进度条行为 | 按定制范围保留 |
 
-详细记录见 [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md)。
+详细记录见 [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md)。触摸/焦点历史修复的已知事实、自动检查边界和实机回归清单见 [TOUCH_FOCUS_CHECKLIST.md](TOUCH_FOCUS_CHECKLIST.md)。
 
 ## 仓库关系与上游许可证
 
@@ -103,9 +103,10 @@ hongguoTV 原本以电视设备为主要交互场景，界面中的焦点移动�
 2. 获取 `origin` 最新远程引用。
 3. 在移动本地分支前创建 `backup/pre-update-时间戳` 恢复分支；根据分支关系执行 fast-forward 或 rebase。
 4. 如果 rebase 出现冲突，停止并提示人工解决，不会自动选择上游或本地版本。
-5. 扫描生产源码，检查手机控制台、评论、剧评和弹幕专用实现是否被上游重新引入。
-6. 执行 `:core:test` 和详情页评论入口移除回归测试。
-7. 执行 `:app:assembleDebug`，检查 Nexus 9 的 ARMv7 APK，并输出文件大小和 SHA-256。
+5. 扫描 `kotlin-tv/app/src/main` 与 `kotlin-tv/core/src/main`，检查手机控制台、评论、剧评和弹幕专用实现是否被上游重新引入。
+6. 检查 `MainActivity.kt` 中榜单触屏返回保护标记仍存在；这只是静态标记检查，不是运行时证明。
+7. 执行 `:core:test`、`RankingScreenTest` 和详情页评论入口移除回归测试。
+8. 执行 `:app:assembleDebug`，检查 Nexus 9 的 ARMv7 APK，并输出文件大小和 SHA-256。
 
 成功构建后的预期 APK：
 
@@ -149,7 +150,7 @@ git rebase --abort
 - 脚本要求工作区干净；请先提交所有希望长期保留的定制修改。
 - fast-forward 或 rebase 前会建立本地备份分支；备份分支不会自动清理。
 - rebase 冲突必须人工处理；脚本不会自动覆盖冲突文件。
-- 脚本会运行 Core 测试及一项关键详情页回归测试，不等同于完整 App 测试套件。若后续完整测试基线修复，应再扩展测试清单。
+- 脚本会运行 Core 测试、`RankingScreenTest` 和一项关键详情页回归测试，不等同于完整 App 测试套件。触摸/焦点逐项人工回归见 `TOUCH_FOCUS_CHECKLIST.md`。
 - 脚本不会自动安装 APK，也不会后台定时运行；需要手动执行。
 - 不要把访问令牌、签名密钥、个人配置或不必要的构建产物提交到仓库。
 - 不要在没有相应权利或许可的情况下分发上游应用、第三方影视内容、图片、商标素材或平台数据。
