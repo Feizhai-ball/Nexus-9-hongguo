@@ -105,7 +105,7 @@ fi
 # 5. Verify removed features have not silently returned upstream.
 echo
 echo "[3/7] Checking removed phone/social features..."
-for dir in app/src/main core/src/main; do
+for dir in kotlin-tv/app/src/main kotlin-tv/core/src/main; do
     if [[ ! -d "$ROOT/$dir" ]]; then
         echo "ERROR: Expected source directory missing: $dir"
         exit 1
@@ -114,7 +114,7 @@ done
 
 if grep -RniE --include='*.kt' --include='*.java' --include='*.xml' \
     'TvSocial|CommentEmoji|DanmakuLayout|TimedCommentWindows|AppCommentPages|CommentBytes|CommentSignature|CommentTransport|PublicComments|TimedComments|comment_emoji|danmakuButton|commentsButton|detailComments|弹幕设置|发送弹幕|评论 · 第|查看评论|剧评|PhoneConsole|PhoneControlCatalog|PhoneControlServer|PhoneControlPage' \
-    app/src/main core/src/main; then
+    kotlin-tv/app/src/main kotlin-tv/core/src/main; then
     echo "ERROR: Removed phone-control/comment/danmaku implementation appears in production source."
     echo "Review the upstream changes before building."
     exit 1
@@ -126,7 +126,7 @@ fi
 # check for the exact fix recorded in TOUCH_FOCUS_CHECKLIST.md.
 echo
 echo "[4/9] Checking touch-mode ranking Back guard..."
-MAIN_ACTIVITY="$ROOT/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt"
+MAIN_ACTIVITY="$ROOT/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt"
 if [[ ! -f "$MAIN_ACTIVITY" ]]; then
     echo "ERROR: MainActivity.kt not found; cannot verify touch-mode Back behavior."
     exit 1
