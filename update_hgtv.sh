@@ -122,25 +122,49 @@ else
     echo "PASS: no known removed-feature implementation markers found."
 fi
 
-# 6. Run focused tests. The full app suite has known unrelated failures
+# 6. Guard the known touch-mode Back behavior. This is a static regression
+# check for the exact fix recorded in TOUCH_FOCUS_CHECKLIST.md.
+echo
+echo "[4/9] Checking touch-mode ranking Back guard..."
+MAIN_ACTIVITY="$ROOT/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt"
+if [[ ! -f "$MAIN_ACTIVITY" ]]; then
+    echo "ERROR: MainActivity.kt not found; cannot verify touch-mode Back behavior."
+    exit 1
+fi
+if ! grep -Fq '!window.decorView.isInTouchMode' "$MAIN_ACTIVITY" ||
+   ! grep -Fq 'rankingScreen?.backToTop()' "$MAIN_ACTIVITY"; then
+    echo "ERROR: The known touch-mode ranking Back guard appears to be missing."
+    echo "Review goBack() against TOUCH_FOCUS_CHECKLIST.md before building."
+    exit 1
+fi
+echo "PASS: touch-mode guard and ranking backToTop action are present."
+echo "NOTE: this is a source-marker check, not proof of runtime behavior."
+
+# 7. Run focused tests. The full app suite has known unrelated failures
 # in the current baseline; keep this list explicit and easy to maintain.
 echo
-echo "[4/7] Running Core tests..."
+echo "[5/9] Running Core tests..."
 "$GRADLE" -p "$ROOT/kotlin-tv" :core:test --no-daemon
 
 echo
-echo "[5/7] Running the social-removal UI regression test..."
+echo "[6/9] Running RankingScreen regression tests..."
+"$GRADLE" -p "$ROOT/kotlin-tv" :app:testDebugUnitTest \
+    --tests 'com.hongguotv.nativeapp.RankingScreenTest' \
+    --no-daemon
+
+echo
+echo "[7/9] Running the social-removal UI regression test..."
 "$GRADLE" -p "$ROOT/kotlin-tv" :app:testDebugUnitTest \
     --tests 'com.hongguotv.nativeapp.TvUsabilityTest.detailKeepsPlaybackCommentsAndSeparateSecondaryActions' \
     --no-daemon
 
-# 7. Build and verify the Nexus 9 32-bit APK.
+# 8. Build and verify the Nexus 9 32-bit APK.
 echo
-echo "[6/7] Building Debug APK..."
+echo "[8/9] Building Debug APK..."
 "$GRADLE" -p "$ROOT/kotlin-tv" :app:assembleDebug --no-daemon
 
 echo
-echo "[7/7] Verifying Nexus 9 APK..."
+echo "[9/9] Verifying Nexus 9 APK..."
 APK="$ROOT/$APK_REL"
 if [[ ! -f "$APK" ]]; then
     echo "ERROR: Expected ARMv7 APK not found: $APK"
