@@ -14,7 +14,7 @@
 
 ### 榜单页触屏返回不应反复回到顶部
 
-- 文件：`app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt`
+- 文件：`kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt`
 - 位置：`goBack()` 中 catalog 的榜单 tab（tab 2）分支。
 - 原问题：原判断只检查榜单导航项没有焦点（`!nav[2].hasFocus()`）。触屏点击时通常没有遥控器焦点，因此按返回可能反复触发 `rankingScreen?.backToTop()`，无法按正常页面层级返回。
 - 已记录的修复：榜单返回顶部/导航焦点专用分支额外要求 `!window.decorView.isInTouchMode`。
