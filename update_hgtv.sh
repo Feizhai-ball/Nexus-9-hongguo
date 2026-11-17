@@ -104,7 +104,7 @@ fi
 
 # 5. Verify removed features have not silently returned upstream.
 echo
-echo "[3/7] Checking removed phone/social features..."
+echo "[3/9] Checking removed phone/social features..."
 for dir in kotlin-tv/app/src/main kotlin-tv/core/src/main; do
     if [[ ! -d "$ROOT/$dir" ]]; then
         echo "ERROR: Expected source directory missing: $dir"
