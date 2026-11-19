@@ -1,1580 +1,1552 @@
-========== MAIN ACTIVITY PLAYBACK DIFF ==========
-diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
-index 89f74c4..3213ec9 100644
---- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
-+++ b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
-@@ -42,104 +42,6 @@ class MainActivity : Activity() {
-     private val main = Handler(Looper.getMainLooper())
-     private val io = Executors.newFixedThreadPool(3)
-     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
--    private val phoneCatalog by lazy {
--        PhoneControlCatalog(library, cloudAccount) { series, progress ->
--            // Save while the old detail still identifies the playing episode.
--            saveProgress()
--            library.flush()
--            releasePlayer()
--            tvTools.close()
--            openDetail(series, resume = true, cloudProgress = progress, fromPhone = true)
--        }
--    }
--    private val phoneConsole by lazy {
--        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl) { keyword, requestedPage, result ->
--            saveProgress()
--            releasePlayer()
--            library.rememberSearch(keyword, ContentType.SHORT)
--            searchDraft = keyword
--            query = keyword
--            submittedSearch = keyword
--            collection = null
--            tab = 7
--            page = requestedPage
--            catalog = result.items
--            hasMore = result.hasMore
--            catalogFocus = ""
--            showCatalog(false)
--        }
--    }
--
--    private fun phoneControl(body: JSONObject): JSONObject {
--        val action = body.getString("action")
--        val active = screen == "player" && detail != null
--        if (action == "status") return JSONObject()
--            .put("active", active).put("title", if (active) detail?.series?.title.orEmpty() else "")
--            .put("episode", if (active) episodeIndex + 1 else 0)
--            .put("episodes", if (active) detail?.episodes?.size ?: 0 else 0)
--            .put("position", if (active) currentPosition() else 0)
--            .put("duration", if (active) player?.duration?.coerceAtLeast(0) ?: 0 else 0)
--            .put("playing", active && player?.isPlaying == true)
--            .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
--            .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
--            .put("signedIn", cloudAccount.signedIn).put("accountStatus", cloudAccount.status)
--            .put("message", phoneCatalog.message).put("reservation", phoneCatalog.reservationStatus())
--            .put("catalogRevision", phoneCatalog.revision).put("favorite", phoneCatalog.favoriteStatus())
--        if (action == "account") {
--            tvTools.close()
--            cloudAccount.show()
--            return JSONObject().put("message", "请在电视完成账户操作")
--        }
--        if (action == "key") {
--            val key = when (body.getString("value")) {
--                "up" -> KeyEvent.KEYCODE_DPAD_UP
--                "down" -> KeyEvent.KEYCODE_DPAD_DOWN
--                "left" -> KeyEvent.KEYCODE_DPAD_LEFT
--                "right" -> KeyEvent.KEYCODE_DPAD_RIGHT
--                "ok" -> KeyEvent.KEYCODE_DPAD_CENTER
--                "back" -> KeyEvent.KEYCODE_BACK
--                else -> throw IllegalArgumentException("Unknown key")
--            }
--            for (event in listOf(KeyEvent(KeyEvent.ACTION_DOWN, key), KeyEvent(KeyEvent.ACTION_UP, key))) {
--                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event) &&
--                    episodePanel?.dispatchPhoneKey(event) != true) dispatchKeyEvent(event)
--            }
--            return JSONObject().put("message", "已发送遥控指令")
--        }
--        if (!active) return JSONObject().put("error", "请先选择剧目并在电视播放；首页可使用方向遥控")
--        when (action) {
--            "pause" -> requestPlayback(false)
--            "resume" -> requestPlayback(true)
--            "previous" -> skipEpisode(-1)
--            "next" -> skipEpisode(1)
--            "backward", "forward" -> {
--                if (!playbackReady) return JSONObject().put("error", "播放器尚未准备完成")
--                seekTo(currentPosition() + if (action == "forward") 15000 else -15000)
--            }
--            "episode" -> {
--                val index = body.getInt("value") - 1
--                require(index in detail!!.episodes.indices)
--                playEpisode(index)
--            }
--            "speed" -> {
--                val speed = body.getDouble("value").toFloat()
--                require(speed in PlaybackSpeed.options)
--                library.playbackSpeed = speed
--                player?.setPlaybackSpeed(speed)
--            }
--            "quality" -> {
--                val quality = body.getInt("value")
--                require(quality in PlaybackQuality.options)
--                if (library.maxQuality != quality) {
--                    library.maxQuality = quality
--                    playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
--                }
--            }
--            else -> throw IllegalArgumentException("Unknown command")
--        }
--        return JSONObject().put("message", "已执行")
--    }
--
-     // 榜单专用并行加载通道：最多四榜各自在途、互不取消，与全局单飞 work() 隔离。
-     private val rankWorker = Executors.newFixedThreadPool(3)
-     private val networkCleanup = Executors.newSingleThreadExecutor()
-@@ -236,7 +138,6 @@ class MainActivity : Activity() {
-     private lateinit var playbackTitle: TextView
-     private var homePlayback = false
-     private var directPlayback = false
--    private var phonePlayback = false
-     private var collection: String? = null
-     private var hotContentType = ContentType.COMIC
-     private var collectionReturn: CatalogState? = null
-@@ -357,7 +258,6 @@ class MainActivity : Activity() {
-         object : ConnectivityManager.NetworkCallback() {
-             private fun changed() {
-                 main.post {
--                    phoneConsole.networkChanged()
-                     if (connectivity.isActiveNetworkMetered || !networkAvailable()) cancelPrefetch()
-                     if (foreground && screen == "player" && playError && autoRecovery)
-                         scheduleRecovery()
-@@ -1057,7 +957,7 @@ class MainActivity : Activity() {
-         invalidatePage()
-         screen = "catalog"
-         releaseCatalogViews()
--        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this, phone = { anchor -> phoneConsole.show(anchor) }) { next -> switchTab(next) }.also {
-+        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this) { next -> switchTab(next) }.also {
-             root.removeAllViews()
-             root.setBackgroundColor(TvStyle.background)
-             root.addView(it, FrameLayout.LayoutParams(-1, -1))
-@@ -2406,7 +2306,6 @@ class MainActivity : Activity() {
-                         setPadding(0, 0, 0, dp(14))
-                     })
-                     setting("登录与账户管理") { cloudAccount.show() }
--                    setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
-                 }
-                 4 -> {
-                     lateinit var about: TextView
-@@ -2531,7 +2430,6 @@ class MainActivity : Activity() {
-         cloudProgress: CloudProgress? = null,
-         fromRelated: Boolean = false,
-         fromHome: Boolean = false,
--        fromPhone: Boolean = false,
-     ) {
-         if (!fromRelated) detailTrail.clear()
-         relatedSection = null
-@@ -2545,7 +2443,6 @@ class MainActivity : Activity() {
-         releaseCatalogViews()
-         screen = "detail"
-         homePlayback = fromHome
--        phonePlayback = fromPhone
-         directPlayback = resume && !fromHome
-         detail = null
-         synopsisExpanded = false
-@@ -2585,7 +2482,7 @@ class MainActivity : Activity() {
-                 error(body, problem) {
-                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
-                         showCatalog()
--                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome, fromPhone)
-+                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome)
-                 }
-             },
-         )
-@@ -4859,10 +4756,9 @@ class MainActivity : Activity() {
-         library.flush()
-         invalidatePage()
-         releasePlayer()
--        if (directPlayback && !forceDetail && !phonePlayback) showCatalog()
-+        if (directPlayback && !forceDetail) showCatalog()
-         else {
-             directPlayback = false
--            phonePlayback = false
-             showDetail(true)
-         }
-     }
-@@ -4907,7 +4803,7 @@ class MainActivity : Activity() {
-         }
-         when (screen) {
-             "player" ->
--                if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
-+                if (homePlayback) returnToDetail(forceDetail = true)
-                 else if (waitingForFirstFrame) returnToDetail()
-                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
-                 else returnToDetail()
-@@ -5027,7 +4923,6 @@ class MainActivity : Activity() {
- 
-     override fun onResume() {
-         super.onResume()
--        phoneConsole.resume()
-         foreground = true
-         startGradualPreloading()
-         gradualPreloader?.resume()
-@@ -5060,7 +4955,6 @@ class MainActivity : Activity() {
-                                         directPlayback,
-                                         autoplay = false,
-                                         cloudProgress = cloud.takeIf { directPlayback },
--                                        fromPhone = phonePlayback,
-                                     )
-                                 }
-                             } ?: showCatalog()
-@@ -5109,7 +5003,6 @@ class MainActivity : Activity() {
- 
-     // 应用离开前台时暂停播放及后台活动，防止页面不可见时继续消耗资源。
-     override fun onStop() {
--        phoneConsole.stop()
-         homeFeed?.close()
-         homeFeed = null
-         restoreStoppedPage = true
-@@ -5135,7 +5028,6 @@ class MainActivity : Activity() {
- 
-     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
-     override fun onDestroy() {
--        phoneConsole.stop()
-         gradualPreloader?.close()
-         generation++
-         cancelWork()
-...skipping...
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-
-                           JUMPING
-
-  g  <  ESC-<       *  Go to first line in file (or line N).
-  G  >  ESC->       *  Go to last line in file (or line N).
-  p  %              *  Go to beginning of file (or N percent into file).
-  t                 *  Go to the (N-th) next tag.
-  T                 *  Go to the (N-th) previous tag.
-  {  (  [           *  Find close bracket } ) ].
-  }  )  ]           *  Find open bracket { ( [.
-  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
-  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
-        ---------------------------------------------------
-        Each "find close bracket" command goes forward to the close bracket 
-          matching the (N-th) open bracket in the top line.
-        Each "find open bracket" command goes backward to the open bracket 
-          matching the (N-th) close bracket in the bottom line.
-
-  m<letter>            Mark the current top line with <letter>.
-  M<letter>            Mark the current bottom line with <letter>.
-  '<letter>            Go to a previously marked position.
-  ''                   Go to the previous position.
-  ^X^X                 Same as '.
-  ESC-m<letter>        Clear a mark.
-        ---------------------------------------------------
-        A mark is any upper-case or lower-case letter.
-        Certain marks are predefined:
-             ^  means  beginning of the file
-             $  means  end of the file
- ---------------------------------------------------------------------------
-
-                        CHANGING FILES
-
-  :e [file]            Examine a new file.
-  ^X^V                 Same as :e.
-  :n                *  Examine the (N-th) next file from the command line.
-  :p                *  Examine the (N-th) previous file from the command line.
-  :x                *  Examine the first (or N-th) file from the command line.
-  ^O^O                 Open the currently selected OSC8 hyperlink.
-  :d                   Delete the current file from the command line list.
-  =  ^G  :f            Print current file name.
- ---------------------------------------------------------------------------
-
-                    MISCELLANEOUS COMMANDS
-
-  -<flag>              Toggle a command line option [see OPTIONS below].
-  --<name>             Toggle a command line option, by name.
-  _<flag>              Display the setting of a command line option.
-  __<name>             Display the setting of an option, by name.
-  +cmd                 Execute the less cmd each time a new file is examined.
-
-  !command             Execute the shell command with $SHELL.
-  #command             Execute the shell command, expanded like a prompt.
-  |Xcommand            Pipe file between current pos & mark X to shell command.
-  s file               Save input to a file.
-  v                    Edit the current file with $VISUAL or $EDITOR.
-  V                    Print version number of "less".
- ---------------------------------------------------------------------------
-
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-Cannot write to "-n 2418,2495p app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt"  (press R
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-
-                           JUMPING
-
-  g  <  ESC-<       *  Go to first line in file (or line N).
-  G  >  ESC->       *  Go to last line in file (or line N).
-  p  %              *  Go to beginning of file (or N percent into file).
-  t                 *  Go to the (N-th) next tag.
-  T                 *  Go to the (N-th) previous tag.
-  {  (  [           *  Find close bracket } ) ].
-  }  )  ]           *  Find open bracket { ( [.
-  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
-  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
-        ---------------------------------------------------
-        Each "find close bracket" command goes forward to the close bracket 
-          matching the (N-th) open bracket in the top line.
-        Each "find open bracket" command goes backward to the open bracket 
-          matching the (N-th) close bracket in the bottom line.
-
-  m<letter>            Mark the current top line with <letter>.
-  M<letter>            Mark the current bottom line with <letter>.
-  '<letter>            Go to a previously marked position.
-  ''                   Go to the previous position.
-  ^X^X                 Same as '.
-  ESC-m<letter>        Clear a mark.
-        ---------------------------------------------------
-        A mark is any upper-case or lower-case letter.
-        Certain marks are predefined:
-             ^  means  beginning of the file
-             $  means  end of the file
- ---------------------------------------------------------------------------
-
-                        CHANGING FILES
-
-  :e [file]            Examine a new file.
-  ^X^V                 Same as :e.
-  :n                *  Examine the (N-th) next file from the command line.
-  :p                *  Examine the (N-th) previous file from the command line.
-  :x                *  Examine the first (or N-th) file from the command line.
-  ^O^O                 Open the currently selected OSC8 hyperlink.
-  :d                   Delete the current file from the command line list.
-  =  ^G  :f            Print current file name.
- ---------------------------------------------------------------------------
-
-                    MISCELLANEOUS COMMANDS
-
-  -<flag>              Toggle a command line option [see OPTIONS below].
-  --<name>             Toggle a command line option, by name.
-  _<flag>              Display the setting of a command line option.
-  __<name>             Display the setting of an option, by name.
-  +cmd                 Execute the less cmd each time a new file is examined.
-
-  !command             Execute the shell command with $SHELL.
-  #command             Execute the shell command, expanded like a prompt.
-  |Xcommand            Pipe file between current pos & mark X to shell command.
-  s file               Save input to a file.
-  v                    Edit the current file with $VISUAL or $EDITOR.
-  V                    Print version number of "less".
- ---------------------------------------------------------------------------
-
-                           OPTIONS
-
-        Most options may be changed either on the command line,
-        or from within less by using the - or -- command.
-        Options may be given in one of two forms: either a single
-        character preceded by a -, or a name preceded by --.
-
-  -?  ........  --help
-                  Display help (from command line).
-  -a  ........  --search-skip-screen
-                  Search skips current screen.
-  -A  ........  --SEARCH-SKIP-SCREEN
-                  Search starts just after target line.
-  -b [N]  ....  --buffers=[N]
-                  Number of buffers.
-  -B  ........  --auto-buffers
-                  Don't automatically allocate buffers for pipes.
-  -c  ........  --clear-screen
-                  Repaint by clearing rather than scrolling.
-  -d  ........  --dumb
-                  Dumb terminal.
-  -D xcolor  .  --color=xcolor
-                  Set screen colors.
-  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
-                  Quit at end of file.
-  -f  ........  --force
-                  Force open non-regular files.
-  -F  ........  --quit-if-one-screen
-                  Quit if entire file fits on first screen.
-  -g  ........  --hilite-search
-                  Highlight only last match for searches.
-  -G  ........  --HILITE-SEARCH
-                  Don't highlight any matches for searches.
-  -h [N]  ....  --max-back-scroll=[N]
-                  Backward scroll limit.
-  -i  ........  --ignore-case
-                  Ignore case in searches that do not contain uppercase.
-  -I  ........  --IGNORE-CASE
-                  Ignore case in all searches.
-  -j [N]  ....  --jump-target=[N]
-                  Screen position of target lines.
-  -J  ........  --status-column
-                  Display a status column at left edge of screen.
-  -k file  ...  --lesskey-file=file
-                  Use a compiled lesskey file.
-  -K  ........  --quit-on-intr
-                  Exit less in response to ctrl-C.
-  -L  ........  --no-lessopen
-                  Ignore the LESSOPEN environment variable.
-  -m  -M  ....  --long-prompt  --LONG-PROMPT
-                  Set prompt style.
-  -n .........  --line-numbers
-                  Suppress line numbers in prompts and messages.
-  -N .........  --LINE-NUMBERS
-                  Display line number at start of each line.
-  -o [file] ..  --log-file=[file]
-                  Copy to log file (standard input only).
-  -O [file] ..  --LOG-FILE=[file]
-                  Copy to log file (unconditionally overwrite).
-  -p pattern .  --pattern=[pattern]
-                  Start at pattern (from command line).
-/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
-  -P [prompt]   --prompt=[prompt]
-                  Define new prompt.
-  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
-                  Quiet the terminal bell.
-  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
-                  Output "raw" control characters.
-  -s  ........  --squeeze-blank-lines
-                  Squeeze multiple blank lines.
-  -S  ........  --chop-long-lines
-                  Chop (truncate) long lines rather than wrapping.
-  -t tag  ....  --tag=[tag]
-                  Find a tag.
-  -T [tagsfile] --tag-file=[tagsfile]
-                  Use an alternate tags file.
-  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
-                  Change handling of backspaces, tabs and carriage returns.
-  -V  ........  --version
-                  Display the version number of "less".
-  -w  ........  --hilite-unread
-                  Highlight first new line after forward-screen.
-  -W  ........  --HILITE-UNREAD
-Cannot write to "-n 80,110p app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt"  
-  -k file  ...  --lesskey-file=file
-                  Use a compiled lesskey file.
-  -K  ........  --quit-on-intr
-                  Exit less in response to ctrl-C.
-  -L  ........  --no-lessopen
-                  Ignore the LESSOPEN environment variable.
-  -m  -M  ....  --long-prompt  --LONG-PROMPT
-                  Set prompt style.
-  -n .........  --line-numbers
-                  Suppress line numbers in prompts and messages.
-  -N .........  --LINE-NUMBERS
-                  Display line number at start of each line.
-  -o [file] ..  --log-file=[file]
-                  Copy to log file (standard input only).
-  -O [file] ..  --LOG-FILE=[file]
-                  Copy to log file (unconditionally overwrite).
-  -p pattern .  --pattern=[pattern]
-                  Start at pattern (from command line).
-  -P [prompt]   --prompt=[prompt]
-                  Define new prompt.
-  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
-                  Quiet the terminal bell.
-  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
-                  Output "raw" control characters.
-  -s  ........  --squeeze-blank-lines
-                  Squeeze multiple blank lines.
-  -S  ........  --chop-long-lines
-                  Chop (truncate) long lines rather than wrapping.
-  -t tag  ....  --tag=[tag]
-                  Find a tag.
-  -T [tagsfile] --tag-file=[tagsfile]
-                  Use an alternate tags file.
-  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
-                  Change handling of backspaces, tabs and carriage returns.
-  -V  ........  --version
-                  Display the version number of "less".
-  -w  ........  --hilite-unread
-                  Highlight first new line after forward-screen.
-  -W  ........  --HILITE-UNREAD
-                  Highlight first new line after any forward movement.
-  -x [N[,...]]  --tabs=[N[,...]]
-                  Set tab stops.
-  -X  ........  --no-init
-                  Don't use termcap init/deinit strings.
-  -y [N]  ....  --max-forw-scroll=[N]
-                  Forward scroll limit.
-  -z [N]  ....  --window=[N]
-                  Set size of window.
-  -" [c[c]]  .  --quotes=[c[c]]
-                  Set shell quote characters.
-  -~  ........  --tilde
-                  Don't display tildes after end of file.
-  -# [N]  ....  --shift=[N]
-                  Set horizontal scroll amount (0 = one half screen width).
-
-                --exit-follow-on-close
-                  Exit F command on a pipe when writer closes pipe.
-                --file-size
-                  Automatically determine the size of the input file.
-                --follow-name
-                  The F command changes files if the input file is renamed.
-                --header=[L[,C[,N]]]
-                  Use L lines (starting at line N) and C columns as headers.
-                --incsearch
-                  Search file as each pattern character is typed in.
-                --intr=[C]
-                  Use C instead of ^X to interrupt a read.
-                --lesskey-context=text
-                  Use lesskey source file contents.
-                --lesskey-src=file
-                  Use a lesskey source file.
-                --line-num-width=[N]
-                  Set the width of the -N line number field to N characters.
-                --match-shift=[N]
-                  Show at least N characters to the left of a search match.
-                --modelines=[N]
-                  Read N lines from the input file and look for vim modelines.
-                --mouse
-                  Enable mouse input.
-                --no-keypad
-                  Don't send termcap keypad init/deinit strings.
-                  Don't send termcap keypad init/deinit strings.
-                --no-histdups
-                  Remove duplicates from command history.
-                --no-number-headers
-                  Don't give line numbers to header lines.
-                --no-search-header-lines
-                  Searches do not include header lines.
-                --no-search-header-columns
-                  Searches do not include header columns.
-                --no-search-headers
-                  Searches do not include header lines or columns.
-                --no-vbell
-                  Disable the terminal's visual bell.
-                --redraw-on-quit
-                  Redraw final screen when quitting.
-                --rscroll=[C]
-                  Set the character used to mark truncated lines.
-                --save-marks
-                  Retain marks across invocations of less.
-                --search-options=[EFKNRW-]
-                  Set default options for every search.
-                --show-preproc-errors
-                  Display a message if preprocessor exits with an error status.
-                --proc-backspace
-                  Process backspaces for bold/underline.
-                --PROC-BACKSPACE
-                  Treat backspaces as control characters.
-                --proc-return
-                  Delete carriage returns before newline.
-                --PROC-RETURN
-                  Treat carriage returns as control characters.
-                --proc-tab
-                  Expand tabs to spaces.
-                --PROC-TAB
-                  Treat tabs as control characters.
-                --status-col-width=[N]
-                  Set the width of the -J status column to N characters.
-                --status-line
-                  Highlight or color the entire line containing a mark.
-                --use-backslash
-                  Subsequent options use backslash as escape char.
-                --use-color
-                  Enables colored text.
-                --wheel-lines=[N]
-                  Each click of the mouse wheel moves N lines.
-                --wordwrap
-                  Wrap lines at spaces.
-
-
- ---------------------------------------------------------------------------
-
-                          LINE EDITING
-
-        These keys can be used to edit text being entered 
-        on the "command line" at the bottom of the screen.
-
- RightArrow ..................... ESC-l ... Move cursor right one character.
- LeftArrow ...................... ESC-h ... Move cursor left one character.
- ctrl-RightArrow  ESC-RightArrow  ESC-w ... Move cursor right one word.
- ctrl-LeftArrow   ESC-LeftArrow   ESC-b ... Move cursor left one word.
- HOME ........................... ESC-0 ... Move cursor to start of line.
- END ............................ ESC-$ ... Move cursor to end of line.
- BACKSPACE ................................ Delete char to left of cursor.
- DELETE ......................... ESC-x ... Delete char under cursor.
- ctrl-BACKSPACE   ESC-BACKSPACE ........... Delete word to left of cursor.
- ctrl-DELETE .... ESC-DELETE .... ESC-X ... Delete word under cursor.
- ctrl-U ......... ESC (MS-DOS only) ....... Delete entire line.
- UpArrow ........................ ESC-k ... Retrieve previous command line.
- DownArrow ...................... ESC-j ... Retrieve next command line.
- TAB ...................................... Complete filename & cycle.
- SHIFT-TAB ...................... ESC-TAB   Complete filename & reverse cycle.
- ctrl-L ................................... Complete filename, list all.
-~
-
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-...skipping...
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-...skipping...
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-
-                           JUMPING
-
-  g  <  ESC-<       *  Go to first line in file (or line N).
-  G  >  ESC->       *  Go to last line in file (or line N).
-  p  %              *  Go to beginning of file (or N percent into file).
-  t                 *  Go to the (N-th) next tag.
-  T                 *  Go to the (N-th) previous tag.
-  {  (  [           *  Find close bracket } ) ].
-  }  )  ]           *  Find open bracket { ( [.
-  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
-  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
-        ---------------------------------------------------
-        Each "find close bracket" command goes forward to the close bracket 
-          matching the (N-th) open bracket in the top line.
-        Each "find open bracket" command goes backward to the open bracket 
-          matching the (N-th) close bracket in the bottom line.
-
-
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-...skipping...
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-  n                 *  Repeat previous search (for N-th occurrence).
-/bin/bash: -c: 行 1: 寻找匹配的 `'' 时遇到了未预期的 EOF
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-
-                           JUMPING
-
-  g  <  ESC-<       *  Go to first line in file (or line N).
-  G  >  ESC->       *  Go to last line in file (or line N).
-  p  %              *  Go to beginning of file (or N percent into file).
-  t                 *  Go to the (N-th) next tag.
-  T                 *  Go to the (N-th) previous tag.
-  {  (  [           *  Find close bracket } ) ].
-  }  )  ]           *  Find open bracket { ( [.
-  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
-  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
-        ---------------------------------------------------
-        Each "find close bracket" command goes forward to the close bracket 
-          matching the (N-th) open bracket in the top line.
-        Each "find open bracket" command goes backward to the open bracket 
-          matching the (N-th) close bracket in the bottom line.
-
-  m<letter>            Mark the current top line with <letter>.
-  M<letter>            Mark the current bottom line with <letter>.
-  '<letter>            Go to a previously marked position.
-  ''                   Go to the previous position.
-  ^X^X                 Same as '.
-  ESC-m<letter>        Clear a mark.
-        ---------------------------------------------------
-        A mark is any upper-case or lower-case letter.
-        Certain marks are predefined:
-             ^  means  beginning of the file
-             $  means  end of the file
- ---------------------------------------------------------------------------
-
-                        CHANGING FILES
-
-  :e [file]            Examine a new file.
-  ^X^V                 Same as :e.
-  :n                *  Examine the (N-th) next file from the command line.
-  :p                *  Examine the (N-th) previous file from the command line.
-  :x                *  Examine the first (or N-th) file from the command line.
-  ^O^O                 Open the currently selected OSC8 hyperlink.
-  :d                   Delete the current file from the command line list.
-  =  ^G  :f            Print current file name.
- ---------------------------------------------------------------------------
-
-                    MISCELLANEOUS COMMANDS
-
-  -<flag>              Toggle a command line option [see OPTIONS below].
-  --<name>             Toggle a command line option, by name.
-  _<flag>              Display the setting of a command line option.
-  __<name>             Display the setting of an option, by name.
-  +cmd                 Execute the less cmd each time a new file is examined.
-
-  !command             Execute the shell command with $SHELL.
-  #command             Execute the shell command, expanded like a prompt.
-  |Xcommand            Pipe file between current pos & mark X to shell command.
-  s file               Save input to a file.
-  v                    Edit the current file with $VISUAL or $EDITOR.
-  V                    Print version number of "less".
- ---------------------------------------------------------------------------
-
-                           OPTIONS
-
-        Most options may be changed either on the command line,
-        or from within less by using the - or -- command.
-        Options may be given in one of two forms: either a single
-        character preceded by a -, or a name preceded by --.
-
-  -?  ........  --help
-                  Display help (from command line).
-  -a  ........  --search-skip-screen
-                  Search skips current screen.
-  -A  ........  --SEARCH-SKIP-SCREEN
-                  Search starts just after target line.
-  -b [N]  ....  --buffers=[N]
-                  Number of buffers.
-  -B  ........  --auto-buffers
-                  Don't automatically allocate buffers for pipes.
-  -c  ........  --clear-screen
-                  Repaint by clearing rather than scrolling.
-  -d  ........  --dumb
-                  Dumb terminal.
-  -D xcolor  .  --color=xcolor
-                  Set screen colors.
-  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
-                  Quit at end of file.
-  -f  ........  --force
-                  Force open non-regular files.
-  -F  ........  --quit-if-one-screen
-                  Quit if entire file fits on first screen.
-  -g  ........  --hilite-search
-                  Highlight only last match for searches.
-  -G  ........  --HILITE-SEARCH
-                  Don't highlight any matches for searches.
-  -h [N]  ....  --max-back-scroll=[N]
-                  Backward scroll limit.
-  -i  ........  --ignore-case
-                  Ignore case in searches that do not contain uppercase.
-  -I  ........  --IGNORE-CASE
-                  Ignore case in all searches.
-  -j [N]  ....  --jump-target=[N]
-                  Screen position of target lines.
-
-
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-...skipping...
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-...skipping...
- ctrl-L ................................... Complete filename, list all.
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-~
-/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
-
-
-                   SUMMARY OF LESS COMMANDS
-
-      Commands marked with * may be preceded by a number, N.
-      Notes in parentheses indicate the behavior if N is given.
-      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
-
-  h  H                 Display this help.
-  q  :q  Q  :Q  ZZ     Exit.
- ---------------------------------------------------------------------------
-
-                           MOVING
-
-  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
-  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
-  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
-  b  ^B  ESC-v      *  Backward one window (or N lines).
-  z                 *  Forward  one window (and set window to N).
-  w                 *  Backward one window (and set window to N).
-  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
-  d  ^D             *  Forward  one half-window (and set half-window to N).
-  u  ^U             *  Backward one half-window (and set half-window to N).
-  ESC-)  RightArrow *  Right one half screen width (or N positions).
-  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
-  ESC-}  ^RightArrow   Right to last column displayed.
-  ESC-{  ^LeftArrow    Left  to first column.
-  F                    Forward forever; like "tail -f".
-  ESC-F                Like F but stop when search pattern is found.
-  r  ^R  ^L            Repaint screen.
-  R                    Repaint screen, discarding buffered input.
-        ---------------------------------------------------
-        Default "window" is the screen height.
-        Default "half-window" is half of the screen height.
- ---------------------------------------------------------------------------
-
-                          SEARCHING
-
-  /pattern          *  Search forward for (N-th) matching line.
-  ?pattern          *  Search backward for (N-th) matching line.
-  n                 *  Repeat previous search (for N-th occurrence).
-  N                 *  Repeat previous search in reverse direction.
-  ESC-n             *  Repeat previous search, spanning files.
-  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
-  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
-  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
-  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
-  ESC-u                Undo (toggle) search highlighting.
-  ESC-U                Clear search highlighting.
-  &pattern          *  Display only matching lines.
-        ---------------------------------------------------
-        A search pattern may begin with one or more of:
-        ^N or !  Search for NON-matching lines.
-        ^E or *  Search multiple files (pass thru END OF FILE).
-        ^F or @  Start search at FIRST file (for /) or last file (for ?).
-        ^K       Highlight matches, but don't move (KEEP position).
-        ^R       Don't use REGULAR EXPRESSIONS.
-        ^S n     Search for match in n-th parenthesized subpattern.
-        ^W       WRAP search if no match found.
-        ^L       Enter next character literally into pattern.
- ---------------------------------------------------------------------------
-
-                           JUMPING
-
-  g  <  ESC-<       *  Go to first line in file (or line N).
-  G  >  ESC->       *  Go to last line in file (or line N).
-  p  %              *  Go to beginning of file (or N percent into file).
-  t                 *  Go to the (N-th) next tag.
-  T                 *  Go to the (N-th) previous tag.
-  {  (  [           *  Find close bracket } ) ].
-  }  )  ]           *  Find open bracket { ( [.
-  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
-  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
-        ---------------------------------------------------
-        Each "find close bracket" command goes forward to the close bracket 
-          matching the (N-th) open bracket in the top line.
-        Each "find open bracket" command goes backward to the open bracket 
-          matching the (N-th) close bracket in the bottom line.
-
-  m<letter>            Mark the current top line with <letter>.
-  M<letter>            Mark the current bottom line with <letter>.
-  '<letter>            Go to a previously marked position.
-  ''                   Go to the previous position.
-  ^X^X                 Same as '.
-  ESC-m<letter>        Clear a mark.
-        ---------------------------------------------------
-        A mark is any upper-case or lower-case letter.
-        Certain marks are predefined:
-             ^  means  beginning of the file
-             $  means  end of the file
- ---------------------------------------------------------------------------
-
-                        CHANGING FILES
-
-  :e [file]            Examine a new file.
-  ^X^V                 Same as :e.
-  :n                *  Examine the (N-th) next file from the command line.
-  :p                *  Examine the (N-th) previous file from the command line.
-  :x                *  Examine the first (or N-th) file from the command line.
-  ^O^O                 Open the currently selected OSC8 hyperlink.
-  :d                   Delete the current file from the command line list.
-  =  ^G  :f            Print current file name.
- ---------------------------------------------------------------------------
-
-                    MISCELLANEOUS COMMANDS
-
-  -<flag>              Toggle a command line option [see OPTIONS below].
-  --<name>             Toggle a command line option, by name.
-  _<flag>              Display the setting of a command line option.
-  __<name>             Display the setting of an option, by name.
-  +cmd                 Execute the less cmd each time a new file is examined.
-
-  !command             Execute the shell command with $SHELL.
-  #command             Execute the shell command, expanded like a prompt.
-  |Xcommand            Pipe file between current pos & mark X to shell command.
-  s file               Save input to a file.
-  v                    Edit the current file with $VISUAL or $EDITOR.
-  V                    Print version number of "less".
- ---------------------------------------------------------------------------
-
-                           OPTIONS
-
-        Most options may be changed either on the command line,
-        or from within less by using the - or -- command.
-        Options may be given in one of two forms: either a single
-        character preceded by a -, or a name preceded by --.
-
-  -?  ........  --help
-                  Display help (from command line).
-  -a  ........  --search-skip-screen
-                  Search skips current screen.
-  -A  ........  --SEARCH-SKIP-SCREEN
-                  Search starts just after target line.
-  -b [N]  ....  --buffers=[N]
-                  Number of buffers.
-  -B  ........  --auto-buffers
-                  Don't automatically allocate buffers for pipes.
-  -c  ........  --clear-screen
-                  Repaint by clearing rather than scrolling.
-  -d  ........  --dumb
-                  Dumb terminal.
-  -D xcolor  .  --color=xcolor
-                  Set screen colors.
-  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
-                  Quit at end of file.
-  -f  ........  --force
-                  Force open non-regular files.
-  -F  ........  --quit-if-one-screen
-                  Quit if entire file fits on first screen.
-  -g  ........  --hilite-search
-                  Highlight only last match for searches.
-  -G  ........  --HILITE-SEARCH
-                  Don't highlight any matches for searches.
-  -h [N]  ....  --max-back-scroll=[N]
-                  Backward scroll limit.
-  -i  ........  --ignore-case
-                  Ignore case in searches that do not contain uppercase.
-  -I  ........  --IGNORE-CASE
-                  Ignore case in all searches.
-  -j [N]  ....  --jump-target=[N]
-                  Screen position of target lines.
-  -J  ........  --status-column
-                  Display a status column at left edge of screen.
-  -k file  ...  --lesskey-file=file
-                  Use a compiled lesskey file.
-  -K  ........  --quit-on-intr
-                  Exit less in response to ctrl-C.
-  -L  ........  --no-lessopen
-                  Ignore the LESSOPEN environment variable.
-  -m  -M  ....  --long-prompt  --LONG-PROMPT
-                  Set prompt style.
-  -n .........  --line-numbers
-                  Suppress line numbers in prompts and messages.
-  -N .........  --LINE-NUMBERS
-                  Display line number at start of each line.
-  -o [file] ..  --log-file=[file]
-                  Copy to log file (standard input only).
-
-                  Repaint by clearing rather than scrolling.
-  -d  ........  --dumb
-                  Dumb terminal.
-  -D xcolor  .  --color=xcolor
-                  Set screen colors.
-  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
-                  Quit at end of file.
-  -f  ........  --force
-                  Force open non-regular files.
-  -F  ........  --quit-if-one-screen
-                  Quit if entire file fits on first screen.
-  -g  ........  --hilite-search
-                  Highlight only last match for searches.
-  -G  ........  --HILITE-SEARCH
-                  Don't highlight any matches for searches.
-  -h [N]  ....  --max-back-scroll=[N]
-                  Backward scroll limit.
-  -i  ........  --ignore-case
-                  Ignore case in searches that do not contain uppercase.
-  -I  ........  --IGNORE-CASE
-                  Ignore case in all searches.
-  -j [N]  ....  --jump-target=[N]
-                  Screen position of target lines.
-  -J  ........  --status-column
-                  Display a status column at left edge of screen.
-  -k file  ...  --lesskey-file=file
-                  Use a compiled lesskey file.
-  -K  ........  --quit-on-intr
-                  Exit less in response to ctrl-C.
-  -L  ........  --no-lessopen
-                  Ignore the LESSOPEN environment variable.
-  -m  -M  ....  --long-prompt  --LONG-PROMPT
-                  Set prompt style.
-  -n .........  --line-numbers
-                  Suppress line numbers in prompts and messages.
-  -N .........  --LINE-NUMBERS
-                  Display line number at start of each line.
-  -o [file] ..  --log-file=[file]
-                  Copy to log file (standard input only).
-  -O [file] ..  --LOG-FILE=[file]
-                  Copy to log file (unconditionally overwrite).
-  -p pattern .  --pattern=[pattern]
-                  Start at pattern (from command line).
-  -P [prompt]   --prompt=[prompt]
-                  Define new prompt.
-  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
-                  Quiet the terminal bell.
-  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
-                  Output "raw" control characters.
-  -s  ........  --squeeze-blank-lines
-                  Squeeze multiple blank lines.
-  -S  ........  --chop-long-lines
-                  Chop (truncate) long lines rather than wrapping.
-  -t tag  ....  --tag=[tag]
-                  Find a tag.
-  -T [tagsfile] --tag-file=[tagsfile]
-                  Use an alternate tags file.
-  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
-                  Change handling of backspaces, tabs and carriage returns.
-  -V  ........  --version
-                  Display the version number of "less".
-  -w  ........  --hilite-unread
-                  Highlight first new line after forward-screen.
-  -W  ........  --HILITE-UNREAD
-                  Highlight first new line after any forward movement.
-  -x [N[,...]]  --tabs=[N[,...]]
-                  Set tab stops.
-  -X  ........  --no-init
-                  Don't use termcap init/deinit strings.
-  -y [N]  ....  --max-forw-scroll=[N]
-                  Forward scroll limit.
-  -z [N]  ....  --window=[N]
-                  Set size of window.
-  -" [c[c]]  .  --quotes=[c[c]]
-                  Set shell quote characters.
-  -~  ........  --tilde
-                  Don't display tildes after end of file.
-  -# [N]  ....  --shift=[N]
-                  Set horizontal scroll amount (0 = one half screen width).
-
-                --exit-follow-on-close
-                  Exit F command on a pipe when writer closes pipe.
-                --file-size
-                  Automatically determine the size of the input file.
-                --follow-name
-                  The F command changes files if the input file is renamed.
-                --header=[L[,C[,N]]]
-                  Use L lines (starting at line N) and C columns as headers.
-                --incsearch
-                  Search file as each pattern character is typed in.
-                --intr=[C]
-                  Use C instead of ^X to interrupt a read.
-                --lesskey-context=text
-                  Use lesskey source file contents.
-                --lesskey-src=file
-                  Use a lesskey source file.
-                --line-num-width=[N]
-                  Set the width of the -N line number field to N characters.
-                --match-shift=[N]
-                  Show at least N characters to the left of a search match.
-                --modelines=[N]
-                  Read N lines from the input file and look for vim modelines.
-                --mouse
-                  Enable mouse input.
-                --no-keypad
-                  Don't send termcap keypad init/deinit strings.
-                --no-histdups
-                  Remove duplicates from command history.
-                --no-number-headers
-                  Don't give line numbers to header lines.
-                --no-search-header-lines
-                  Searches do not include header lines.
-                --no-search-header-columns
-                  Searches do not include header columns.
-                --no-search-headers
-                  Searches do not include header lines or columns.
-                --no-vbell
-                  Disable the terminal's visual bell.
-                --redraw-on-quit
-                  Redraw final screen when quitting.
-                --rscroll=[C]
-                  Set the character used to mark truncated lines.
-                --save-marks
-                  Retain marks across invocations of less.
-                --search-options=[EFKNRW-]
-                  Set default options for every search.
-                --show-preproc-errors
-                  Display a message if preprocessor exits with an error status.
-                --proc-backspace
-                  Process backspaces for bold/underline.
-                --PROC-BACKSPACE
-                  Treat backspaces as control characters.
-                --proc-return
-                  Delete carriage returns before newline.
-                --PROC-RETURN
-                  Treat carriage returns as control characters.
-                --proc-tab
-                  Expand tabs to spaces.
-                --PROC-TAB
-                  Treat tabs as control characters.
-                --status-col-width=[N]
-                  Set the width of the -J status column to N characters.
-                --status-line
-                  Highlight or color the entire line containing a mark.
-                --use-backslash
-                  Subsequent options use backslash as escape char.
-                --use-color
-                  Enables colored text.
-                --wheel-lines=[N]
-                  Each click of the mouse wheel moves N lines.
-                --wordwrap
-                  Wrap lines at spaces.
-
-
- ---------------------------------------------------------------------------
-
-                          LINE EDITING
-
-        These keys can be used to edit text being entered 
-        on the "command line" at the bottom of the screen.
-
- RightArrow ..................... ESC-l ... Move cursor right one character.
- LeftArrow ...................... ESC-h ... Move cursor left one character.
- ctrl-RightArrow  ESC-RightArrow  ESC-w ... Move cursor right one word.
- ctrl-LeftArrow   ESC-LeftArrow   ESC-b ... Move cursor left one word.
- HOME ........................... ESC-0 ... Move cursor to start of line.
- END ............................ ESC-$ ... Move cursor to end of line.
- BACKSPACE ................................ Delete char to left of cursor.
- DELETE ......................... ESC-x ... Delete char under cursor.
- ctrl-BACKSPACE   ESC-BACKSPACE ........... Delete word to left of cursor.
- ctrl-DELETE .... ESC-DELETE .... ESC-X ... Delete word under cursor.
- ctrl-U ......... ESC (MS-DOS only) ....... Delete entire line.
- UpArrow ........................ ESC-k ... Retrieve previous command line.
- DownArrow ...................... ESC-j ... Retrieve next command line.
- TAB ...................................... Complete filename & cycle.
- SHIFT-TAB ...................... ESC-TAB   Complete filename & reverse cycle.
- ctrl-L ................................... Complete filename, list all.
+k@k-PC:~/hongguoTV-v0166-recovery/kotlin-tv/app/build/platform/outputs/apk/debug$ cd "$HOME/hongguoTV-v0166-recovery/kotlin-tv"
+echo "========== TOUCH LISTENERS =========="
+rg -n -C 4 'setOnTouchListener|onTouchEvent|dispatchTouchEvent|performClick|ACTION_DOWN|ACTION_UP' app/src/main/kotlin/com/hongguotv/nativeapp
+echo "========== BUTTON CLICK AND FOCUS =========="
+rg -n -C 3 'setOnClickListener|isFocusable|isClickable|requestFocus|OnFocusChangeListener|focusableInTouchMode' app/src/main/kotlin/com/hongguotv/nativeapp
+========== TOUCH LISTENERS ==========
+app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
+357-                .create()
+358-        next.setOnKeyListener { _, key, event ->
+359-            when {
+360-                key in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
+361:                    if (event.action == KeyEvent.ACTION_DOWN)
+362-                        digit((key - KeyEvent.KEYCODE_0).toString())
+363-                    true
+364-                }
+365-                key == KeyEvent.KEYCODE_DEL -> {
+366:                    if (event.action == KeyEvent.ACTION_DOWN) erase()
+367-                    true
+368-                }
+369-                else -> false
+370-            }
+
+app/src/main/kotlin/com/hongguotv/nativeapp/HomeScreen.kt
+369-                            true
+370-                        }
+371-                        view.setOnKeyListener { _, code, event ->
+372-                            if (code == KeyEvent.KEYCODE_MENU) {
+373:                                if (event.action == KeyEvent.ACTION_UP) {
+374-                                    lastFocus = key
+375-                                    remember(key)
+376-                                    card.entry?.let { actions(it.series, view) }
+377-                                }
+
+app/src/main/kotlin/com/hongguotv/nativeapp/ContinuousCatalogView.kt
+151-            onGridFocus?.invoke(focus)
+152-        }
+153-        grid.setOnKeyListener { _, key, event ->
+154-            if (key == KeyEvent.KEYCODE_MENU) {
+155:                if (event.action == KeyEvent.ACTION_UP)
+156-                    entries.getOrNull(grid.selectedItemPosition)?.let { item ->
+157-                        grid.selectedView?.let { more(item, it) }
+158-                    }
+159-                true
+160:            } else if (event.action == KeyEvent.ACTION_DOWN) {
+161-                navigating = key in listOf(KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
+162-                when {
+163-                    key == KeyEvent.KEYCODE_DPAD_LEFT &&
+164-                        grid.selectedItemPosition % columns == 0 &&
+
+app/src/main/kotlin/com/hongguotv/nativeapp/HomeFeedScreen.kt
+324-        hero.setOnClickListener { toggle() }
+325-        stage.setOnKeyListener { _, key, event ->
+326-            when (key) {
+327-                KeyEvent.KEYCODE_DPAD_UP -> {
+328:                    if (event.action == KeyEvent.ACTION_DOWN) recommendButton.requestFocus()
+329-                    true
+330-                }
+331-                KeyEvent.KEYCODE_DPAD_DOWN -> {
+332:                    if (event.action == KeyEvent.ACTION_DOWN) showActions()
+333-                    true
+334-                }
+335-                KeyEvent.KEYCODE_DPAD_LEFT,
+336-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+337:                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+338-                        move(if (key == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+339-                    true
+340-                }
+341-                KeyEvent.KEYCODE_DPAD_CENTER,
+342-                KeyEvent.KEYCODE_ENTER -> {
+343:                    if (event.action == KeyEvent.ACTION_UP) toggle()
+344-                    true
+345-                }
+346-                else -> false
+347-            }
+
+app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
+122-        val focused = findFocus()
+123-        val index = buttons.indexOf(focused)
+124-        if (index >= 0 && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+125-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)) {
+126:            if (event.action == KeyEvent.ACTION_DOWN) when (event.keyCode) {
+127-                KeyEvent.KEYCODE_DPAD_UP -> buttons[(index - 1).coerceAtLeast(0)].requestFocus()
+128-                KeyEvent.KEYCODE_DPAD_DOWN -> buttons[(index + 1).coerceAtMost(buttons.lastIndex)].requestFocus()
+129-                KeyEvent.KEYCODE_DPAD_RIGHT -> restoreContent()
+130-            }
+--
+132-        }
+133-        // Resolve vertical movement inside the content first, independent of the rail's
+134-        // geometry and stale nextFocus IDs. At the top, provide a direct route home.
+135-        val vertical = event.keyCode == KeyEvent.KEYCODE_DPAD_UP || event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+136:        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) &&
+137-            focused !is android.widget.AbsListView) {
+138-            val direction = if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP) FOCUS_UP else FOCUS_DOWN
+139-            val next = focused?.focusSearch(direction)
+140-            if (next == null || next === focused || !inContent(next)) {
+--
+145-                else if (direction == FOCUS_UP) navigation[selectedDestination].requestFocus()
+146-                return true
+147-            }
+148-        }
+149:        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT &&
+150-            inContent(focused) && focused !is android.widget.AbsListView && focused !is HandlesHorizontalKeys) {
+151-            val next = focused?.focusSearch(FOCUS_LEFT)
+152-            if (next == null || !inContent(next) || next === focused) {
+153-                navigation[selectedDestination].requestFocus()
+154-                return true
+155-            }
+156-        }
+157-        val handled = super.dispatchKeyEvent(event)
+158:        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) && !inContent(findFocus())) {
+159-            focused?.requestFocus()
+160-            return true
+161-        }
+162-        return handled
+
+app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
+1511-                    true
+1512-                }
+1513-                card.setOnKeyListener { _, key, event ->
+1514-                    if (key == KeyEvent.KEYCODE_MENU) {
+1515:                        if (event.action == KeyEvent.ACTION_UP) {
+1516-                            catalogFocus = item.id
+1517-                            quickActions(item, card)
+1518-                        }
+1519-                        true
+--
+4402-                dp(56).toFloat(),
+4403-                ViewConfiguration.get(this).scaledTouchSlop.toFloat(),
+4404-            )
+4405-        val surface = view.videoSurfaceView ?: view
+4406:        surface.setOnTouchListener { _, event ->
+4407-            when (event.actionMasked) {
+4408:                MotionEvent.ACTION_DOWN -> {
+4409-                    tracker.down(event.x, event.y)
+4410-                    true
+4411-                }
+4412-                MotionEvent.ACTION_MOVE -> true
+4413:                MotionEvent.ACTION_UP -> {
+4414-                    when (
+4415-                        tracker.up(
+4416-                            event.x,
+4417-                            event.y,
+--
+4421-                        )
+4422-                    ) {
+4423-                        EpisodeSwipeTracker.Result.NEXT -> skipEpisode(1)
+4424-                        EpisodeSwipeTracker.Result.PREVIOUS -> skipEpisode(-1)
+4425:                        EpisodeSwipeTracker.Result.TAP -> view.performClick()
+4426-                        EpisodeSwipeTracker.Result.NONE -> Unit
+4427-                    }
+4428-                    true
+4429-                }
+--
+4896-        gradualPreloader?.yieldToUser()
+4897-    }
+4898-
+4899-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+4900:        if (event.action == KeyEvent.ACTION_DOWN) gradualPreloader?.yieldToUser()
+4901-        if (screen == "catalog" && event.keyCode == KeyEvent.KEYCODE_BACK) {
+4902:            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
+4903-            return true
+4904-        }
+4905-        if (screen == "player") {
+4906:            if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
+4907-            val key = event.keyCode
+4908-            if (key == KeyEvent.KEYCODE_BACK) {
+4909:                if (event.action == KeyEvent.ACTION_UP) goBack()
+4910-                return true
+4911-            }
+4912-            if (
+4913-                key in
+--
+4921-                        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+4922-                        KeyEvent.KEYCODE_MEDIA_REWIND,
+4923-                    )
+4924-            ) {
+4925:                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
+4926-                    when (key) {
+4927-                        KeyEvent.KEYCODE_MEDIA_PLAY -> requestPlayback(true)
+4928-                        KeyEvent.KEYCODE_MEDIA_PAUSE -> requestPlayback(false)
+4929-                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
+--
+4947-                            KeyEvent.KEYCODE_DPAD_DOWN,
+4948-                            KeyEvent.KEYCODE_MENU,
+4949-                        )
+4950-                ) {
+4951:                    if (event.action == KeyEvent.ACTION_DOWN)
+4952-                        when (key) {
+4953-                            KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1, event.repeatCount)
+4954-                            KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1, event.repeatCount)
+4955-                            KeyEvent.KEYCODE_DPAD_CENTER,
+========== BUTTON CLICK AND FOCUS ==========
+app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
+60-                phone?.close()
+61-                phone = null
+62-                dialog = null
+63:                if (anchor?.isAttachedToWindow == true) anchor.requestFocus()
+64-            }
+65-        }
+66-        next.show()
+--
+112-                .setPositiveButton("确认") { _, _ -> action() }
+113-                .create()
+114-        open(next, anchor)
+115:        next.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
+116-    }
+117-
+118-    fun choose(
+--
+152-                id = View.generateViewId()
+153-                tag = "choice-${choices.size}"
+154-                gravity = Gravity.CENTER_VERTICAL
+155:                isFocusable = true
+156:                isFocusableInTouchMode = true
+157:                isClickable = true
+158-                minimumHeight = dp(48)
+159-                setPadding(dp(14), dp(10), dp(14), dp(10))
+160-                contentDescription = value + if (checked) "，当前已选" else ""
+--
+181-                marker.setTextColor(TvVisual.accent)
+182-            }
+183-            paint(false)
+184:            row.setOnFocusChangeListener { _, focused -> paint(focused) }
+185:            row.setOnClickListener { next.dismiss(); action() }
+186-            list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+187-            choices += row
+188-        }
+--
+210-        scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
+211-        next.window?.setLayout(width, height)
+212-        val target = choices[selected.takeIf { it in labels.indices } ?: 0]
+213:        target.requestFocus()
+214-        target.post { if (next.isShowing) scroll.requestChildFocus(list, target) }
+215-    }
+216-
+--
+238-                        text = value
+239-                        textSize = 15f
+240-                        gravity = android.view.Gravity.CENTER
+241:                        isFocusable = true
+242:                        isClickable = true
+243-                        maxLines = 1
+244-                        ellipsize = android.text.TextUtils.TruncateAt.END
+245-                        setPadding(dp(10), dp(10), dp(10), dp(10))
+--
+249-                            background = TvStyle.card(activity, focused, index == selected)
+250-                        }
+251-                        paint(false)
+252:                        setOnFocusChangeListener { _, focused -> paint(focused) }
+253:                        setOnClickListener {
+254-                            next.dismiss()
+255-                            onChoice(index)
+256-                        }
+--
+288-            (activity.resources.displayMetrics.widthPixels * .85f).toInt(),
+289-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+290-        )
+291:        choices.getOrNull(selected.coerceAtLeast(0))?.requestFocus()
+292-    }
+293-
+294-    fun episodePicker(count: Int, current: Int, anchor: View?, select: (Int) -> Unit) {
+--
+331-                                    arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
+332-                                    intArrayOf(TvStyle.raised, TvStyle.surface),
+333-                                )
+334:                            setOnClickListener {
+335-                                when (key) {
+336-                                    "清空" -> {
+337-                                        digits = ""
+--
+380-        }
+381-        locate.nextFocusUpId = buttons[10].id
+382-        cancel.nextFocusUpId = buttons[9].id
+383:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+384-            val target = EpisodeTarget.parse(digits, count)
+385-            if (target == null) error.text = "请输入 1—$count 之间的集数"
+386-            else {
+--
+388-                select(target)
+389-            }
+390-        }
+391:        buttons.first().requestFocus()
+392-    }
+393-
+394-    private fun qr(url: String) =
+--
+455-        if (addresses.size > 1) builder.setNeutralButton("切换地址", null)
+456-        val next = builder.create()
+457-        open(next, anchor)
+458:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+459-            val message =
+460-                "请依次检查：\n1. 用手机浏览器打开二维码地址；扫码软件内打不开时，选择在浏览器打开。\n2. 手机不要只用移动数据；手机和电视需处于可互通的局域网。\n3. 访客 Wi-Fi、路由器设备隔离、VPN 可能阻断连接。\n4. 多个网络可尝试切换地址；电脑模拟器的内部地址通常无法被手机访问。\n\n返回时会重新生成二维码，旧地址随窗口关闭失效。"
+461-            val help =
+--
+474-            open(help, anchor)
+475-        }
+476-        if (addresses.size > 1)
+477:            next.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+478-                choose(
+479-                    "选择电视网络地址",
+480-                    addresses.map { "${it.label} · ${it.address}" },
+--
+588-                                        }
+589-                                        .create()
+590-                                open(confirm, anchor)
+591:                                confirm.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
+592-                            }
+593-                        },
+594-                        {
+
+app/src/main/kotlin/com/hongguotv/nativeapp/RankingScreen.kt
+50-    private fun button(value: String, action: () -> Unit) =
+51-        label(value, 14f).apply {
+52-            id = View.generateViewId()
+53:            isFocusable = true
+54:            isClickable = true
+55-            gravity = Gravity.CENTER
+56-            setPadding(dp(14), dp(7), dp(14), dp(7))
+57-            minHeight = dp(36)
+--
+59-                setTextColor(if (isSelected) TvStyle.accent else TvStyle.text)
+60-                background = TvStyle.card(activity, hasFocus(), isSelected)
+61-            }
+62:            setOnFocusChangeListener { _, _ -> paint() }
+63:            setOnClickListener { action() }
+64-            paint()
+65-        }
+66-
+--
+187-    }
+188-
+189-    fun start(force: Boolean, focusNav: Boolean) {
+190:        if (focusNav) nav[2].requestFocus() else controls[state.board.ordinal].requestFocus()
+191-        // 进入页面时 TTL 内的缓存直接展示；是否续期由状态机判断，不做模态等待。
+192-        maybeRefresh(state.board, force = force && !state.isFresh(state.board))
+193-        if (!state.isRefreshing(state.board) && !focusNav && state.selectedId.isNotEmpty()) {
+
+app/src/main/kotlin/com/hongguotv/nativeapp/TvSearchPanel.kt
+58-        showingResults = true
+59-        editor.visibility = GONE
+60-        resultStage.visibility = VISIBLE
+61:        backButton.requestFocus()
+62-    }
+63-    fun back(): Boolean {
+64-        if (!showingResults) return false
+65-        showingResults = false
+66-        resultStage.visibility = GONE
+67-        editor.visibility = VISIBLE
+68:        if (editingFocus?.requestFocus() != true) entry().requestFocus()
+69-        updateNavigation()
+70-        return true
+71-    }
+--
+96-            text = value
+97-            textSize = 18f
+98-            gravity = Gravity.CENTER
+99:            isFocusable = true
+100:            isClickable = true
+101-            minHeight = dp(36)
+102-            setTextColor(TvStyle.text)
+103-            setPadding(dp(4), dp(6), dp(4), dp(6))
+104-            background = TvStyle.card(context, false)
+105:            setOnFocusChangeListener { _, focused ->
+106-                background = TvStyle.shape(context, if (focused) TvStyle.text else TvStyle.surface, radius = 5)
+107-                setTextColor(if (focused) TvStyle.background else TvStyle.text)
+108-            }
+109:            setOnClickListener(click)
+110-        }
+111-
+112-    private fun hideKeyboard() {
+--
+179-                val key = action(char.toString()) { insert(char.lowercaseChar().toString()) }
+180-                val keyIndex = keys.size
+181-                val styleFocus = key.onFocusChangeListener
+182:                key.setOnFocusChangeListener { view, focused ->
+183-                    styleFocus?.onFocusChange(view, focused)
+184-                    if (focused) { lastKey = keyIndex; suggestionsNavigation() }
+185-                }
+--
+203-                searchButton,
+204-                action("打开输入法") {
+205-                    input.showSoftInputOnFocus = true
+206:                    input.requestFocus()
+207-                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+208-                        .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+209-                },
+
+app/src/main/kotlin/com/hongguotv/nativeapp/EpisodePanel.kt
+42-            id = View.generateViewId()
+43-            gravity = Gravity.CENTER
+44-            minHeight = dp(46)
+45:            isFocusable = true
+46:            isFocusableInTouchMode = true
+47-            fun paint(focus: Boolean) {
+48-                background = TvStyle.card(activity, focus, active)
+49-            }
+50-            paint(false)
+51:            setOnFocusChangeListener { _, hasFocus -> paint(hasFocus) }
+52:            setOnClickListener { action() }
+53-        }
+54-
+55-    fun show() {
+--
+108-                }
+109-                .apply {
+110-                    isEnabled = group > 0
+111:                    isFocusable = isEnabled
+112-                    alpha = if (isEnabled) 1f else .4f
+113-                }
+114-        val next =
+--
+119-                }
+120-                .apply {
+121-                    isEnabled = (group + 1) * 20 < count
+122:                    isFocusable = isEnabled
+123-                    alpha = if (isEnabled) 1f else .4f
+124-                }
+125-        listOf(previous, next).forEach {
+--
+171-            cell.nextFocusRightId = cells[if (i % 5 == 4 || i == cells.lastIndex) i else i + 1].id
+172-            cell.nextFocusUpId =
+173-                if (i >= 5) cells[i - 5].id
+174:                else if (i < 3 && previous.isFocusable) previous.id
+175:                else if (next.isFocusable) next.id else jump.id
+176-            cell.nextFocusDownId =
+177-                cells[
+178-                        if (i + 5 < cells.size) i + 5
+--
+183-        next.nextFocusUpId = jump.id
+184-        previous.nextFocusDownId = cells.first().id
+185-        next.nextFocusDownId = cells[minOf(4, cells.lastIndex)].id
+186:        close.nextFocusDownId = if (previous.isFocusable) previous.id else cells.first().id
+187-        jump.nextFocusDownId =
+188:            if (next.isFocusable) next.id else cells[minOf(4, cells.lastIndex)].id
+189-        close.nextFocusLeftId = close.id
+190-        close.nextFocusRightId = jump.id
+191-        jump.nextFocusLeftId = close.id
+192-        jump.nextFocusRightId = jump.id
+193-        dialog.setContentView(content)
+194:        cells[(focused - group * 20).coerceIn(0, cells.lastIndex)].requestFocus()
+195-    }
+196-}
+
+app/src/main/kotlin/com/hongguotv/nativeapp/HomeScreen.kt
+198-    }
+199-
+200-    /** Rebuild only this bounded shelf area, preserving the old card or its nearest neighbour. */
+201:    fun updateShelves(next: List<Shelf>, requestFocus: Boolean = hasFocus()) {
+202-        val position = capturePosition()
+203:        render(next, position.focus, requestFocus, footerMore, position)
+204-    }
+205-
+206-    /**
+--
+247-    fun render(
+248-        shelves: List<Shelf>,
+249-        focus: String,
+250:        requestFocus: Boolean,
+251-        more: (() -> Unit)?,
+252-        position: Position? = null,
+253-    ) {
+--
+310-                            orientation = VERTICAL
+311-                            id = View.generateViewId()
+312-                            tag = key
+313:                            isFocusable = true
+314:                            isFocusableInTouchMode = true
+315-                            setPadding(dp(4), dp(4), dp(4), dp(8))
+316-                            background = shape(false)
+317-                        }
+--
+356-                    view.contentDescription =
+357-                        entry?.let { "${shelf.title}，${it.series.title}，${it.label}" }
+358-                            ?: "查看全部${shelf.title}"
+359:                    view.setOnClickListener {
+360-                        lastFocus = key
+361-                        remember(key)
+362-                        card.entry?.let { open(it.series, it.resume) } ?: moreAction?.invoke()
+--
+379-                            } else false
+380-                        }
+381-                    }
+382:                    view.setOnFocusChangeListener { _, focused ->
+383-                        view.background = shape(focused)
+384-                        if (focused) {
+385-                            lastFocus = key
+--
+415-                label("更多热门  ›", 15f).apply {
+416-                    id = View.generateViewId()
+417-                    tag = "home:more"
+418:                    isFocusable = true
+419:                    isFocusableInTouchMode = true
+420-                    setPadding(dp(12), dp(12), dp(12), dp(12))
+421-                    background = shape(false)
+422:                    setOnFocusChangeListener { _, f ->
+423-                        background = shape(f)
+424-                        if (f) lastFocus = tag.toString()
+425-                    }
+426:                    setOnClickListener { more() }
+427-                }
+428-            contents.addView(next, LayoutParams(-1, -2).apply { topMargin = dp(8) })
+429-            footer += next
+--
+459-        top.nextFocusDownId = firstId()
+460-        val preferred = focus.ifBlank { previous?.focus.orEmpty() }
+461-        val target = target(preferred, previous)
+462:        if (requestFocus) target.requestFocus()
+463-        post layout@{
+464-            if (revision != ticket) return@layout
+465-            fitArtwork()
+--
+467-                if (revision != ticket) return@restore
+468-                if (previous != null) restoreOffsets(previous)
+469-                restoring = false
+470:                if (requestFocus && previous == null)
+471-                    rows
+472-                        .firstOrNull { row -> row.cards.any { it.view === target } }
+473-                        ?.let { revealSelection(it) }
+--
+476-        }
+477-    }
+478-
+479:    fun restorePosition(position: Position, requestFocus: Boolean = true) {
+480-        restoring = true
+481:        if (requestFocus) target(position.focus, position).requestFocus()
+482-        post {
+483-            restoreOffsets(position)
+484-            restoring = false
+
+app/src/main/kotlin/com/hongguotv/nativeapp/DiscoveryScreen.kt
+191-            textSize = 12f
+192-            includeFontPadding = false
+193-            maxLines = 1
+194:            isFocusable = true
+195:            isClickable = true
+196-            setPadding(dp(8), dp(5), dp(8), dp(5))
+197-            minHeight = dp(30)
+198-            fun paint() {
+--
+201-                setTextColor(if (selected) TvStyle.accent else TvStyle.text)
+202-                background = TvStyle.card(context, hasFocus(), selected)
+203-            }
+204:            setOnFocusChangeListener { _, _ -> paint() }
+205:            setOnClickListener { action() }
+206-            paint()
+207-        }
+208-
+209-    private fun toggleFocus() {
+210:        toggle.requestFocus()
+211-    }
+212-
+213-    private fun expand(value: Boolean) {
+--
+292-            val strip =
+293-                HorizontalScrollView(context).apply {
+294-                    isHorizontalScrollBarEnabled = false
+295:                    isFocusable = false
+296-                    addView(choices)
+297-                }
+298-            strips[group.type] = strip
+--
+350-        reset.nextFocusRightId = refresh.id
+351-        refresh.nextFocusLeftId = reset.id
+352-        expand(state.expanded)
+353:        focused?.let { controls[it]?.requestFocus() }
+354-        navigationChanged?.invoke()
+355-    }
+356-
+--
+394-        filterDialog = dialog
+395-        dialog.setOnDismissListener {
+396-            if (filterDialog === dialog) filterDialog = null
+397:            if (!closed) controls[group.type to "__all_options__"]?.requestFocus()
+398-        }
+399-        dialog.show()
+400-        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+401-        dialog.window?.setLayout(dp(640), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
+402:        cells[options.indexOfFirst { it.id == state.selection.values[group.type].orEmpty() }.coerceAtLeast(0)].requestFocus()
+403-    }
+404-
+405-    private fun showItems() {
+--
+441-            state.groups = state.groups.filter { it.type == "genre" }
+442-        showItems()
+443-        renderFilters()
+444:        focus?.let { controls[it]?.requestFocus() }
+445-        request(null)
+446-    }
+447-
+--
+509-    fun start(focus: Boolean) {
+510-        if (focus) {
+511-            if (state.position != null && state.items.isNotEmpty()) browser.enter()
+512:            else entry().requestFocus()
+513-        }
+514-        if (!state.loaded) request(null)
+515-    }
+
+app/src/main/kotlin/com/hongguotv/nativeapp/ProducerWorksDialog.kt
+53-            scope.cancel()
+54-            worker.shutdownNow()
+55-            main.removeCallbacksAndMessages(null)
+56:            if (anchor.isAttachedToWindow) anchor.requestFocus()
+57-        }
+58:        more.setOnClickListener { loadPage() }
+59-        dialog.show()
+60-        dialog.window?.setBackgroundDrawable(TvVisual.panel(activity, modal = true))
+61-        dialog.window?.setLayout(minOf(dp(640), (activity.resources.displayMetrics.widthPixels * .9f).toInt()),
+62-            (activity.resources.displayMetrics.heightPixels * .85f).toInt())
+63-        render(listOf(current))
+64:        list.getChildAt(0)?.requestFocus()
+65-        worker.execute {
+66-            val known = runCatching { scope.run { repository.relatedProducerWorks(producer, current) } }
+67-            main.post {
+--
+82-            val card = LinearLayout(activity).apply {
+83-                id = View.generateViewId(); tag = series.id
+84-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+85:                isFocusable = true; isFocusableInTouchMode = true
+86-                setPadding(dp(8), dp(6), dp(8), dp(6))
+87-                background = TvStyle.card(activity, false)
+88-                contentDescription = series.title
+--
+91-            card.addView(poster, LinearLayout.LayoutParams(dp(63), dp(84)))
+92-            card.addView(label(series.title + "\n" + series.badge).apply { maxLines = 3 }, LinearLayout.LayoutParams(0, -2, 1f))
+93-            loadCover(poster, series.cover)
+94:            card.setOnFocusChangeListener { v, focused ->
+95-                v.background = TvStyle.card(activity, focused)
+96-                if (focused) loadCover(poster, series.cover)
+97-            }
+98:            card.setOnClickListener { close(); openSeries(series) }
+99-            list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
+100-        }
+101-        status.text = "已确认 ${rows.size} 部作品"
+
+app/src/main/kotlin/com/hongguotv/nativeapp/RelatedWorksView.kt
+51-        val refresh =
+52-            label("刷新", 15f).apply {
+53-                id = View.generateViewId()
+54:                isFocusable = true
+55:                isFocusableInTouchMode = true
+56-                setPadding(dp(14), dp(10), dp(14), dp(10))
+57-                background = TvStyle.card(context, false)
+58:                setOnFocusChangeListener { view, focused ->
+59-                    view.background = TvStyle.card(context, focused)
+60-                }
+61:                setOnClickListener { reload() }
+62-                nextFocusUpId = upper.lastOrNull()?.id ?: id
+63-            }
+64-        refreshButton = refresh
+--
+87-        if (rows.isEmpty()) return
+88-        val allButton = label("全部季 / 相关作品 · ${rows.size} 项 ›").apply {
+89-            id = View.generateViewId()
+90:            isFocusable = true
+91-            setPadding(dp(12), dp(10), dp(12), dp(10))
+92-            background = TvStyle.card(context, false)
+93:            setOnFocusChangeListener { v, focused -> v.background = TvStyle.card(context, focused) }
+94:            setOnClickListener { showAll(rows, this) }
+95-        }
+96-        addView(allButton)
+97-        val scroll =
+--
+109-                        orientation = VERTICAL
+110-                        id = View.generateViewId()
+111-                        tag = work.series.id
+112:                        isFocusable = true
+113:                        isFocusableInTouchMode = true
+114-                        contentDescription = work.series.title + "，" + work.label
+115-                        setPadding(dp(5), dp(5), dp(5), dp(9))
+116-                        background = TvStyle.card(context, false)
+--
+135-                val status = label(if (work.upcoming) reserveLabel(work) else "已上线 · 查看剧集", 12f)
+136-                card.addView(status)
+137-                labels += work to status
+138:                card.setOnClickListener { open(work, card) }
+139:                card.setOnFocusChangeListener { view, focused ->
+140-                    view.background = TvStyle.card(context, focused)
+141-                    if (focused) {
+142-                        loadCover(image, work.series.cover)
+--
+176-            LinearLayout(context).apply {
+177-                orientation = VERTICAL
+178-                id = View.generateViewId()
+179:                isFocusable = true
+180-                setPadding(dp(6), dp(6), dp(6), dp(6))
+181-                background = TvStyle.card(context, false)
+182-                contentDescription = work.series.title + "，" + work.label
+--
+193-                    ellipsize = android.text.TextUtils.TruncateAt.END
+194-                })
+195-                addView(label(if (work.upcoming) reserveLabel(work) else work.label, 12f))
+196:                setOnFocusChangeListener { v, focused ->
+197-                    v.background = TvStyle.card(context, focused)
+198-                    if (focused) loadCover(poster, work.series.cover)
+199-                }
+200:                setOnClickListener { allDialog?.dismiss(); open(work, anchor) }
+201-            }.also { cell -> grid.addView(cell, GridLayout.LayoutParams().apply {
+202-                width = dp(148); height = -2
+203-                setMargins(dp(4), dp(4), dp(4), dp(4))
+--
+214-        allDialog = dialog
+215-        dialog.setOnDismissListener {
+216-            if (allDialog === dialog) allDialog = null
+217:            if (anchor.isAttachedToWindow) anchor.requestFocus()
+218-        }
+219-        dialog.show()
+220-        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+221-        dialog.window?.setLayout(dp(680), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
+222:        cells.firstOrNull()?.requestFocus()
+223-    }
+224-
+225-    override fun onDetachedFromWindow() {
+
+app/src/main/kotlin/com/hongguotv/nativeapp/AccountController.kt
+500-                .setPositiveButton("确认", null)
+501-        if (error != null) builder.setMessage(error)
+502-        showDialog(builder)
+503:        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+504-            val value = field.text.toString().trim()
+505:            if (value.isBlank()) return@setOnClickListener
+506-            dialog?.dismiss()
+507-            submit(value)
+508-        }
+--
+631-                .create()
+632-                .also { phoneDialog = it; it.show() }
+633-
+634:        phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
+635:            if (requestInFlight) return@setOnClickListener
+636-            val current = login
+637-            val value = code.text.toString().trim()
+638-            if (current == null) {
+639-                hint.text = "请先点「获取验证码」"
+640:                return@setOnClickListener
+641-            }
+642-            if (!value.matches(Regex("[0-9]{4,8}"))) {
+643-                hint.text = "请输入 4—8 位验证码"
+644:                return@setOnClickListener
+645-            }
+646-            phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
+647-            requestInFlight = true
+--
+668-            )
+669-        }
+670-
+671:        countryButton.setOnClickListener {
+672-            pickCountryCode(context, country) { picked ->
+673-                country = picked
+674-                countryButton.text = "+$picked ▾"
+675-            }
+676-        }
+677-
+678:        send.setOnClickListener {
+679:            if (requestInFlight) return@setOnClickListener
+680-            val typed = mobile.text.toString().trim()
+681-            val number =
+682-                runCatching {
+--
+686-                    }
+687-                    .getOrElse {
+688-                        hint.text = safeError(it)
+689:                        return@setOnClickListener
+690-                    }
+691-            val fresh = PhoneLogin(phoneHttp, phoneRetryGate)
+692-            login = null
+
+app/src/main/kotlin/com/hongguotv/nativeapp/ContinuousCatalogView.kt
+79-                navigating = false
+80-                onBrowsePosition?.invoke(0)
+81-                grid.setSelection(0)
+82:                grid.requestFocus()
+83:            } else upper.requestFocus()
+84-        }
+85-    private val cards =
+86-        object : BaseAdapter() {
+--
+98-                val item = entries[position]
+99-                return bind(item, convertView).apply {
+100-                    tag = item.id
+101:                    isFocusable = false
+102:                    isClickable = false
+103-                    isLongClickable = false
+104-                    if (this is ViewGroup) descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+105-                    background =
+--
+146-                        requestMore(false)
+147-                }
+148-            }
+149:        grid.setOnFocusChangeListener { _, focus ->
+150-            paintFocus()
+151-            onGridFocus?.invoke(focus)
+152-        }
+--
+163-                    key == KeyEvent.KEYCODE_DPAD_LEFT &&
+164-                        grid.selectedItemPosition % columns == 0 &&
+165-                        sideEntry != null -> {
+166:                        sideEntry?.requestFocus()
+167-                        true
+168-                    }
+169-                    key == KeyEvent.KEYCODE_DPAD_UP &&
+170-                        grid.selectedItemPosition in 0 until columns -> {
+171:                        upper.requestFocus()
+172-                        true
+173-                    }
+174-                    key == KeyEvent.KEYCODE_DPAD_DOWN &&
+175-                        grid.selectedItemPosition >= ((entries.size - 1) / columns) * columns -> {
+176-                        if (remoteNavigation) {
+177:                            if (failed) next.requestFocus() else if (available) requestMore(false)
+178-                        } else {
+179:                            (if (available) next else top).requestFocus()
+180-                            if (available && !failed) requestMore(true)
+181-                        }
+182-                        true
+--
+222-            textSize = 14f
+223-            setTextColor(TvStyle.text)
+224-            includeFontPadding = false
+225:            isFocusable = true
+226:            isClickable = true
+227-            setPadding(dp(14), dp(6), dp(14), dp(6))
+228-            background = TvStyle.card(context, false)
+229:            setOnFocusChangeListener { _, focus -> background = TvStyle.card(context, focus) }
+230:            setOnClickListener { click() }
+231-        }
+232-
+233-    private fun paintFocus() {
+--
+346-        paintStatus()
+347-        if (focusAdded && entries.size > firstNew) {
+348-            grid.setSelection(firstNew)
+349:            grid.requestFocus()
+350-        } else if (!available && next.hasFocus()) {
+351:            if (remoteNavigation) grid.requestFocus() else top.requestFocus()
+352-        }
+353-    }
+354-
+--
+371-    }
+372-
+373-    fun enter() {
+374:        if (entries.isEmpty() && available) next.requestFocus() else grid.requestFocus()
+375-    }
+376-
+377-    fun close() {
+
+app/src/main/kotlin/com/hongguotv/nativeapp/HomeFeedScreen.kt
+152-    private fun button(value: String, action: () -> Unit) =
+153-        label(value, 14f).apply {
+154-            id = View.generateViewId()
+155:            isFocusable = true
+156:            isFocusableInTouchMode = true
+157:            isClickable = true
+158-            gravity = Gravity.CENTER
+159-            maxLines = 1
+160-            ellipsize = TextUtils.TruncateAt.END
+--
+164-            minHeight = dp(44)
+165-            setPadding(dp(10), dp(10), dp(10), dp(10))
+166-            background = TvStyle.card(activity, false)
+167:            setOnFocusChangeListener { _, _ -> paintButton(this) }
+168:            setOnClickListener { action() }
+169-        }
+170-
+171-    private fun paintButton(button: TextView) {
+--
+228-        tag.background = null
+229-
+230-        val content = LinearLayout(activity).apply { setPadding(0, 0, 0, 0) }
+231:        stage.isFocusable = true
+232:        stage.isFocusableInTouchMode = true
+233:        stage.isClickable = true
+234-        stage.contentDescription = "左右换剧，确定暂停或继续，下键进入操作"
+235-        stage.background = TvStyle.shape(activity, Color.BLACK, radius = 7)
+236-        stage.clipToOutline = true
+--
+317-                    else if (state.category == DramaCategory.COMIC) comicButton else realButton)
+318-                    .id
+319-        }
+320:        stage.setOnFocusChangeListener { _, focused ->
+321-            hero.background = TvStyle.card(activity, focused)
+322-        }
+323:        stage.setOnClickListener { toggle() }
+324:        hero.setOnClickListener { toggle() }
+325-        stage.setOnKeyListener { _, key, event ->
+326-            when (key) {
+327-                KeyEvent.KEYCODE_DPAD_UP -> {
+328:                    if (event.action == KeyEvent.ACTION_DOWN) recommendButton.requestFocus()
+329-                    true
+330-                }
+331-                KeyEvent.KEYCODE_DPAD_DOWN -> {
+--
+393-
+394-    // 设置进入首页时的初始焦点，并在应用位于前台时启动播放流程。
+395-    fun start(foreground: Boolean, focusNav: Boolean) {
+396:        if (focusNav) nav[0].requestFocus() else stage.requestFocus()
+397-        if (foreground) resume()
+398-    }
+399-
+--
+488-
+489-    fun back(): Boolean {
+490-        if (!actions.hasFocus()) return false
+491:        stage.requestFocus()
+492-        return true
+493-    }
+494-
+--
+504-    private fun showActions() {
+505-        actions.visibility = View.VISIBLE
+506-        paintActions()
+507:        (if (watchButton.isEnabled) watchButton else stage).requestFocus()
+508-    }
+509-
+510-    private fun paintActions() {
+--
+528-            relatedCount.second > 0 -> "相关 ${relatedCount.first} 部 · 可预约 ${relatedCount.second} 部"
+529-            else -> "相关剧集 ${relatedCount.first} 部"
+530-        }
+531:        if (!relatedButton.isEnabled && relatedButton.hasFocus()) watchButton.requestFocus()
+532-        favoriteButton.text = state.current?.let { favoriteLabel(it.id) } ?: "账户收藏"
+533-        recommendButton.isSelected = state.recommendation
+534-        comicButton.isSelected = !state.recommendation && state.category == DramaCategory.COMIC
+
+app/src/main/kotlin/com/hongguotv/nativeapp/HomeSpotlight.kt
+43-        val actions = LinearLayout(context)
+44-        fun action(value: String, proceed: () -> Unit) = label(value, 14f, TvStyle.text).apply {
+45-            id = View.generateViewId()
+46:            isFocusable = true
+47:            isClickable = true
+48-            minHeight = dp(40)
+49-            gravity = Gravity.CENTER
+50-            setPadding(dp(14), dp(8), dp(14), dp(8))
+51-            background = TvStyle.card(context, false)
+52:            setOnFocusChangeListener { _, focus -> background = TvStyle.card(context, focus) }
+53:            setOnClickListener { proceed() }
+54-        }
+55-        play = action(if (resume) "▶ 继续观看" else "▶ 开始观看") { open(true) }
+56-        detail = action("查看详情") { open(false) }
+
+app/src/main/kotlin/com/hongguotv/nativeapp/FeedPlayback.kt
+460-    private val surface =
+461-        PlayerView(context).apply {
+462-            useController = false
+463:            isFocusable = false
+464-            resizeMode = when (frame) {
+465-                VideoFrameMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+466-                VideoFrameMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+
+app/src/main/kotlin/com/hongguotv/nativeapp/SearchSuggestionsView.kt
+43-    fun restore(values: List<String>) = render(values)
+44-    fun viewAt(index: Int): View? = chips.getOrNull(index)
+45-    fun selectedIndex(): Int = chips.indexOfFirst { it.hasFocus() }
+46:    fun focusAt(index: Int) { chips.getOrNull(index)?.requestFocus() }
+47-    var keyboardEntry: () -> View = { peers.lastOrNull() ?: input }
+48-
+49-    private val watcher =
+--
+59-        }
+60-
+61-    init {
+62:        isFocusable = false
+63-        line.orientation = if (vertical || grid) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+64-        if (grid) addView(line, LayoutParams(-1, -2))
+65-        else addView(HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; addView(line) }, LayoutParams(-1, -2))
+--
+108-                    if (!grid) maxWidth = dp(300)
+109-                    gravity = android.view.Gravity.CENTER_VERTICAL
+110-                    includeFontPadding = true
+111:                    isFocusable = true
+112:                    isClickable = true
+113-                    setTextColor(TvStyle.text)
+114-                    setPadding(dp(12), dp(8), dp(12), dp(8))
+115-                    minHeight = if (grid) maxOf(dp(76), (paint.fontSpacing * 2).toInt() + paddingTop + paddingBottom + dp(4)) else dp(36)
+116-                    background = if (grid) TvStyle.shape(context, TvStyle.surface, TvStyle.outline) else TvStyle.card(context, false)
+117:                    setOnFocusChangeListener { _, focus ->
+118-                        background = if (grid) TvStyle.shape(context, if (focus) TvStyle.text else TvStyle.surface, if (focus) TvStyle.text else TvStyle.outline) else TvStyle.card(context, focus)
+119-                        setTextColor(if (grid && focus) TvStyle.background else TvStyle.text)
+120-                    }
+121:                    setOnClickListener { search(value) }
+122-                }
+123-            chips += chip
+124-            if (grid) {
+--
+140-        scrollTo(0, 0)
+141-        updateNavigation()
+142-        if (focusedValue != null) {
+143:            (chips.firstOrNull { it.text.toString() == focusedValue } ?: chips.firstOrNull() ?: keyboardEntry()).requestFocus()
+144-        }
+145-    }
+146-
+
+app/src/main/kotlin/com/hongguotv/nativeapp/AppUpdater.kt
+187-                dialog = null
+188-                statusView = null
+189-            }
+190:            if (from?.isAttachedToWindow == true) from.requestFocus()
+191-        }
+192-        next.show()
+193:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+194-            when {
+195-                ready -> install()
+196-                available != null -> download()
+197-                else -> check()
+198-            }
+199-        }
+200:        next.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+201-            next.dismiss()
+202-        }
+203-        renderActions()
+204-        next.getButton(AlertDialog.BUTTON_POSITIVE).post {
+205:            if (dialog === next) next.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus()
+206-        }
+207-    }
+208-
+
+app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
+435-    private fun focusStyle(view: View, selected: Boolean = false) {
+436-        view.id = View.generateViewId()
+437-        view.isSelected = selected
+438:        view.isFocusable = true
+439:        view.isFocusableInTouchMode = true
+440-        fun paint(focused: Boolean) {
+441-            view.background = TvStyle.card(this, focused, selected)
+442-        }
+443-        paint(false)
+444:        view.setOnFocusChangeListener { _, focused -> paint(focused) }
+445-    }
+446-
+447-    // 统一创建可点击的文字按钮；将界面样式、焦点效果与业务回调连接起来。
+--
+452-            minHeight = dp(42)
+453-            if (selected) setTextColor(accent)
+454-            focusStyle(this, selected)
+455:            setOnClickListener { onClick() }
+456-        }
+457-
+458-    private fun addButton(
+--
+528-                val focusNav = nav.any { it.hasFocus() }
+529-                val focusManage = historyManage?.hasFocus() == true
+530-                showCatalog(focusNav = focusNav)
+531:                if (focusManage) historyManage?.requestFocus()
+532-                if (cloudAccount.signedIn) {
+533-                    if (
+534-                        tab == 5 &&
+--
+759-            else if (problem is java.net.SocketTimeoutException) "连接超时"
+760-            else problem.message.orEmpty().replace(Regex("https?://\\S+"), "[地址]").take(160)
+761-        parent.addView(text(detail, 13f, muted))
+762:        addButton(parent, "重试", onClick = retry).requestFocus()
+763-    }
+764-
+765-    // 导航按钮的点击入口：记录当前栏目状态，再切换到目标栏目。
+--
+781-        ranking = saved?.ranking
+782-        catalogFocus = tabFocus[next].orEmpty()
+783-        showCatalog(load = ((next <= 2 || next == 7 && query.isNotBlank()) && catalog.isEmpty()), focusNav = keepNavigationFocus && next != 7 && next != 6)
+784:        if (next == 7) tvSearchPanel?.entry()?.requestFocus()
+785-        refreshAccountSection()
+786-    }
+787-
+--
+961-            val body = column()
+962-            container.addView(body, lp(-1, 0).apply { weight = 1f })
+963-            settings(body)
+964:            if (focusNav) nav[tab].requestFocus()
+965-            return
+966-        }
+967-        if (tab == 8) {
+--
+969-            homeFeedIdentity = cloudAccount.recommendationIdentity
+970-            if (cloudAccount.recommendationLoading) {
+971-                container.addView(text("正在恢复账号推荐…", 18f, muted))
+972:                if (focusNav) nav[8].requestFocus()
+973-                return
+974-            }
+975-            val feed =
+--
+1058-            nav.forEach { it.nextFocusDownId = browser.entry().id }
+1059-            browser.navigationChanged = { nav.forEach { it.nextFocusDownId = browser.entry().id } }
+1060-            browser.start(!focusNav)
+1061:            if (focusNav) nav[tab].requestFocus()
+1062-            return
+1063-        }
+1064-        if (tab == 7) {
+--
+1083-            nav.forEach { it.nextFocusDownId = panel.entry().id }
+1084-            if (query.isBlank()) {
+1085-                panel.results.addView(TvEmptyState(this, "想看什么？", "输入剧名或拼音，选择联想词或按搜索\n也可以用手机输入"), lp(-1, -1))
+1086:                panel.entry().requestFocus()
+1087-                return
+1088-            }
+1089-        } else if (tab > 2) {
+--
+1210-            if (tab == 0) catalogGrid(body, focusNav, focusType, loading = true)
+1211-            else {
+1212-                message(body, "正在加载…")
+1213:                if (tvSearchPanel != null) tvSearchPanel?.entry()?.requestFocus()
+1214:                else if (focusType) typeButtons[hotContentType]?.requestFocus()
+1215:                else nav[tab].requestFocus()
+1216-            }
+1217-            val requestTab = tab
+1218-            val requestPage = page
+--
+1250-                        catalogGrid(body, keepNav || focusNav, keepType || focusType)
+1251-                        if (submittedSearch == requestQuery) submittedSearch = null
+1252-                        if (focusResults && catalog.isNotEmpty()) continuousCatalog?.enter()
+1253:                        else if (keepInput) searchInput?.requestFocus()
+1254:                        else if (keepSuggestion != null) keepSuggestion.requestFocus()
+1255-                    }
+1256-                },
+1257-                { problem ->
+--
+1273-                        addCollectionHeader(body)
+1274-                        error(body, problem) { showCatalog(true) }
+1275-                        searchSuggestions?.updateNavigation()
+1276:                        if (focusType) typeButtons[hotContentType]?.requestFocus()
+1277:                        else if (resumeCards.isNotEmpty()) resumeCards.first().requestFocus()
+1278-                    }
+1279-                },
+1280-            )
+--
+1395-                typeButtons.values.forEach { it.nextFocusDownId = resumeCards.first().id }
+1396-                resumeCards.forEach { it.nextFocusDownId = it.id }
+1397-            }
+1398:            if (focusType) typeButtons[hotContentType]?.requestFocus()
+1399:            else if (collectionBack != null && !focusNav) collectionBack?.requestFocus()
+1400:            else if (focusNav || resumeCards.isEmpty()) nav[tab].requestFocus()
+1401:            else resumeCards.first().requestFocus()
+1402-            return
+1403-        }
+1404-        val cards = mutableListOf<View>()
+--
+1493-                        }
+1494-                card.addView(badge, lp(-1, -2))
+1495-                if (isFavorites()) favoriteBadges[item.id] = badge
+1496:                card.setOnClickListener {
+1497:                    if (reservationNotice(item, card)) return@setOnClickListener
+1498-                    catalogFocus = item.id
+1499-                    openDetail(
+1500-                        item,
+--
+1519-                        true
+1520-                    } else false
+1521-                }
+1522:                card.setOnFocusChangeListener { _, focused ->
+1523-                    card.background = TvStyle.card(this, focused)
+1524-                    if (focused) {
+1525-                        catalogFocus = item.id
+--
+1565-                    }
+1566-                    .apply {
+1567-                        isEnabled = page > 1
+1568:                        isFocusable = page > 1
+1569-                        alpha = if (page > 1) 1f else .4f
+1570-                    }
+1571-            paging.addView(
+--
+1590-                    }
+1591-                    .apply {
+1592-                        isEnabled = hasMore
+1593:                        isFocusable = hasMore
+1594-                        alpha = if (hasMore) 1f else .4f
+1595-                    }
+1596-            if (collection == "hot" && !hasMore && collectionReturn?.hasMore == true) {
+--
+1622-                if (index + count < cards.size) cards[index + count].id
+1623-                else if (index / count < cards.lastIndex / count) cards.last().id
+1624-                else
+1625:                    next?.takeIf { it.isFocusable }?.id
+1626:                        ?: prev?.takeIf { it.isFocusable }?.id
+1627-                        ?: card.id
+1628-        }
+1629-        nav.forEach {
+--
+1665-        searchInput?.nextFocusDownId = cards.first().id
+1666-        searchButton?.nextFocusDownId = cards[minOf(4, cards.lastIndex)].id
+1667-        searchActions.forEach { it.nextFocusDownId = cards[minOf(4, cards.lastIndex)].id }
+1668:        if (focusType) typeButtons[hotContentType]?.requestFocus()
+1669:        else if (focusNav) nav[tab].requestFocus()
+1670-        else if (
+1671-            resumeCards.isNotEmpty() &&
+1672-                (catalogFocus.isEmpty() || catalogFocus.startsWith("resume:"))
+1673-        )
+1674-            (resumeCards.firstOrNull { it.tag == catalogFocus } ?: resumeCards.first())
+1675:                .requestFocus()
+1676:        else cards[displayed.indexOfFirst { it.id == catalogFocus }.coerceAtLeast(0)].requestFocus()
+1677-        val savedScroll = scrollPositions[catalogPageKey]
+1678-        scroll.post {
+1679-            if (catalogScroll !== scroll) return@post
+--
+1789-            browser.setSideEntry(if (panel.showingResults) panel.resultBackEntry() else panel.middleEntry() ?: panel.entry())
+1790-            nav.forEach { it.nextFocusDownId = panel.entry().id }
+1791-        }
+1792:        if (focusNav) nav[tab].requestFocus()
+1793:        else if (focusType) upper.requestFocus() else browser.enter()
+1794-    }
+1795-
+1796-    private fun reservationNotice(series: Series, anchor: View): Boolean {
+--
+1926-            homePosition,
+1927-        )
+1928-        home.showStatus(if (loading && hot.isEmpty()) "正在加载热门…" else "")
+1929:        if (focusNav || focusType) nav[0].requestFocus()
+1930-        if (hot.isNotEmpty() && !homeContentLogged) {
+1931-            homeContentLogged = true
+1932-            body.post {
+--
+2002-        if (screen != "catalog") return
+2003-        val home = homeScreen
+2004-        if (home != null) {
+2005:            home.updateShelves(homeShelves(), requestFocus = true)
+2006-            home.refreshSelection()
+2007-            return
+2008-        }
+--
+2171-                focusStyle(this)
+2172-                setPadding(dp(20), dp(8), dp(18), dp(8))
+2173-                background = TvVisual.row(this@MainActivity, false)
+2174:                setOnFocusChangeListener { _, focused ->
+2175-                    background = TvVisual.row(this@MainActivity, focused)
+2176-                    invalidate()
+2177-                }
+2178:                setOnClickListener { action() }
+2179-            }
+2180-            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(4) })
+2181-            entries += view
+--
+2187-                setPadding(dp(20), dp(11), dp(14), dp(11))
+2188-                minimumHeight = dp(46)
+2189-                background = TvVisual.row(this@MainActivity, false)
+2190:                setOnFocusChangeListener { _, focused -> background = TvVisual.row(this@MainActivity, focused) }
+2191-            }
+2192-            view.addView(text(label, 15f), lp(0, -2).apply { weight = 1f })
+2193-            val control = SettingsSwitch(this).apply {
+2194-                isChecked = checked
+2195:                isClickable = false
+2196:                isFocusable = false
+2197-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+2198-                if (android.os.Build.VERSION.SDK_INT >= 23) thumbTintList = android.content.res.ColorStateList.valueOf(white)
+2199-                if (android.os.Build.VERSION.SDK_INT >= 23) trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, TvStyle.outline))
+2200-            }
+2201-            view.addView(control)
+2202:            view.setOnFocusChangeListener { _, focused ->
+2203-                view.background = TvVisual.row(this@MainActivity, focused)
+2204-                (view.getChildAt(0) as? TextView)?.setTextColor(TvVisual.primary)
+2205-                control.rowFocused = focused
+2206-            }
+2207-            fun describe() { view.contentDescription = "$label，${if (control.isChecked) "开启" else "关闭"}，按确定切换" }
+2208-            describe()
+2209:            view.setOnClickListener { control.isChecked = !control.isChecked; change(control.isChecked); describe() }
+2210-            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(8) })
+2211-            entries += view
+2212-        }
+--
+2214-        val buttons = categories.mapIndexed { index, title ->
+2215-            button(title, onClick = {
+2216-                if (settingsGroup != index) render(index)
+2217:                settingsRows.getOrNull(settingsPositions[index].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
+2218-            }).apply {
+2219-                tag = "settings-category-$index"
+2220-                minHeight = dp(52)
+2221-                gravity = Gravity.CENTER_VERTICAL
+2222-                setPadding(dp(22), dp(10), dp(12), dp(10))
+2223-                sidebar.addView(this, lp(-1, -2).apply { bottomMargin = dp(8) })
+2224:                setOnFocusChangeListener { _, focused ->
+2225-                    if (focused) render(index)
+2226-                    background = TvVisual.row(this@MainActivity, focused, settingsGroup == index, category = true)
+2227-                    setTextColor(if (focused || settingsGroup == index) TvVisual.focusedValue else muted)
+--
+2313-                view.nextFocusUpId = settingsRows.getOrNull(position - 1)?.id ?: nav[tab].id
+2314-                view.nextFocusDownId = settingsRows.getOrNull(position + 1)?.id ?: view.id
+2315-                val paint = view.onFocusChangeListener
+2316:                view.setOnFocusChangeListener { target, focused ->
+2317-                    paint?.onFocusChange(target, focused)
+2318-                    if (focused) settingsPositions[index] = position
+2319-                }
+--
+2329-        }
+2330-        render(settingsGroup)
+2331-        parent.addView(text("↑↓ 选择  ·  → 进入选项  ·  ← 返回分类  ·  返回：分类 / 顶部导航", 12f, Color.rgb(112, 122, 140)).apply { setPadding(0, dp(12), 0, 0) })
+2332:        settingsRows.getOrNull(settingsPositions[settingsGroup].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
+2333-    }
+2334-
+2335-    private fun saveSearchDraft() {
+--
+2624-        val groupStrip = row()
+2625-        val groupScroll = HorizontalScrollView(this).apply {
+2626-            isHorizontalScrollBarEnabled = false
+2627:            isFocusable = false
+2628-            addView(groupStrip)
+2629-        }
+2630-        groupRow.addView(groupScroll, lp(0, dp(44)).apply { weight = 1f; rightMargin = dp(12) })
+--
+2635-                if (group != index) {
+2636-                    group = index
+2637-                    showDetail(true)
+2638:                    root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
+2639-                }
+2640-            }.apply {
+2641-                tag = "episode-group-$index"
+--
+2650-                        if (isSelected || hasFocus()) TvStyle.raised else Color.TRANSPARENT,
+2651-                        if (hasFocus()) white else Color.TRANSPARENT, radius = 20)
+2652-                }
+2653:                setOnFocusChangeListener { _, _ -> paintGroup() }
+2654-                paintGroup()
+2655-                groupStrip.addView(this, lp(-2, dp(40)).apply { rightMargin = dp(6) })
+2656-            }
+--
+2829-        if (focusEpisode)
+2830-            episodes
+2831-                .getOrNull((episodeIndex - group * 20).coerceIn(0, episodes.lastIndex))
+2832:                ?.requestFocus()
+2833:        else play.requestFocus()
+2834-    }
+2835-
+2836-    // 正式播放入口：准备指定剧集的播放资源与播放器状态。
+--
+2955-                    layoutInflater.inflate(R.layout.video_player, root, false) as PlayerView else PlayerView(this)).apply {
+2956-                    useController = false
+2957-                    resizeMode = frameResizeMode()
+2958:                    isFocusable = false
+2959-                    setKeepContentOnPlayerReset(true)
+2960-                    setShutterBackgroundColor(Color.BLACK)
+2961-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+--
+2968-            persistentTime = text("", 12f, Color.WHITE)
+2969-            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
+2970-            persistentProgress = column().apply {
+2971:                isFocusable = false
+2972-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+2973-                setPadding(dp(12), dp(4), dp(12), dp(6))
+2974-                setBackgroundColor(Color.argb(160, 0, 0, 0))
+--
+2984-                setTextColor(Color.WHITE)
+2985-                setPadding(dp(10), dp(5), dp(10), dp(5))
+2986-                background = rounded(Color.argb(150, 11, 15, 21))
+2987:                isFocusable = false
+2988-            }.also { clock ->
+2989-                root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+2990-                    topMargin = (resources.displayMetrics.heightPixels * .05f).toInt()
+--
+3019-                    max = 1000
+3020-                    progressTintList = android.content.res.ColorStateList.valueOf(accent)
+3021-                    progressBackgroundTintList = android.content.res.ColorStateList.valueOf(surface)
+3022:                    isFocusable = false
+3023:                    isFocusableInTouchMode = false
+3024-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+3025-                        override fun onStartTrackingTouch(seekBar: SeekBar) {
+3026-                            isSeekingProgress = true
+--
+3066-                },
+3067-                FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM),
+3068-            )
+3069:            view.setOnClickListener {
+3070-                when {
+3071-                    screen != "player" -> Unit
+3072-                    playError || waitingForFirstFrame -> showHud()
+--
+3938-        val toolsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+3939-        val searchButton = Button(this).apply { text = "搜索伴机" }
+3940-        val qrButton = Button(this).apply { text = "扫码输入" }
+3941:        searchButton.setOnClickListener {
+3942-            it.isEnabled = false
+3943-            searchStatus.text = "正在搜索局域网伴机（约 5 秒）…"
+3944-            val started =
+--
+3968-                searchStatus.text = "此设备不支持自动发现，请改用扫码或手动输入"
+3969-            }
+3970-        }
+3971:        qrButton.setOnClickListener {
+3972-            tvTools.phoneInput(
+3973-                anchor,
+3974-                inputTitle = "手机输入伴机地址",
+--
+4007-                .setNegativeButton("取消", null)
+4008-                .create()
+4009-        dialog.setOnShowListener {
+4010:            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+4011-                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
+4012-                if (toggle.isChecked && (normalized == null || tokenInput.text.toString().isBlank())) {
+4013-                    val reason = if (normalized == null) "地址格式不对（示例 192.168.1.100:46521）" else "启用伴机需填写令牌（见伴机电脑启动日志）"
+4014-                    Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
+4015:                    return@setOnClickListener
+4016-                }
+4017-                relayStore.enabled = toggle.isChecked
+4018-                if (normalized != null) relayStore.host = normalized
+4019-                relayStore.token = tokenInput.text.toString().trim()
+4020-                relayDialog?.dismiss()
+4021-            }
+4022:            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+4023-                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
+4024-                if (normalized == null) {
+4025-                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
+4026:                    return@setOnClickListener
+4027-                }
+4028-                Toast.makeText(this, "正在连接 $normalized …", Toast.LENGTH_SHORT).show()
+4029-                val token = tokenInput.text.toString().trim()
+--
+4043-        }
+4044-        dialog.setOnDismissListener {
+4045-            relayDialog = null
+4046:            if (anchor.isAttachedToWindow) anchor.requestFocus()
+4047-        }
+4048-        relayDialog = dialog
+4049-        dialog.show()
+--
+4135-        val actions = row()
+4136-        controls.addView(actions)
+4137-        val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
+4138:        if (recovery.attempts == 0) retryButton.requestFocus()
+4139-        lowerTier?.let { lower ->
+4140-            addButton(actions, "尝试 ${lower}P") {
+4141-                library.maxQuality = lower
+--
+4528-        addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
+4529-            .apply {
+4530-                isEnabled = episodeIndex > 0
+4531:                isFocusable = episodeIndex > 0
+4532-                alpha = if (episodeIndex > 0) 1f else .4f
+4533-            }
+4534-        addButton(transport, "下一集") {
+--
+4537-            .apply {
+4538-                val enabled = episodeIndex < (detail?.episodes?.lastIndex ?: 0)
+4539-                isEnabled = enabled
+4540:                isFocusable = enabled
+4541-                alpha = if (enabled) 1f else .4f
+4542-            }
+4543-        val options = row().apply { setPadding(0, dp(6), 0, 0) }
+--
+4593-                    )
+4594-                }
+4595-                .apply { tag = "playback-settings" }
+4596:        play.requestFocus()
+4597-        showHud()
+4598-    }
+4599-
+--
+4651-                    if (resumeOnClose && foreground && generation == ticket && screen == "player") {
+4652-                        if (requestedAutoplay && !sleepStopped && !pausedForLifecycle)
+4653-                            player?.play()
+4654:                        if (anchor.isAttachedToWindow) anchor.requestFocus()
+4655-                        if (overlayWasVisible) showHud() else hidePlaybackOverlay()
+4656-                    }
+4657-                },
+--
+4839-            return
+4840-        }
+4841-        if (screen == "catalog" && tab == 6) {
+4842:            if (settingsRows.any { it.hasFocus() }) { settingsSidebar.getOrNull(settingsGroup)?.requestFocus(); return }
+4843:            if (settingsSidebar.any { it.hasFocus() }) { nav[6].requestFocus(); return }
+4844-        }
+4845-        if (screen == "catalog" && tab == 8 && !nav[8].hasFocus()) {
+4846-            if (homeFeed?.back() == true) return
+4847:            nav[8].requestFocus()
+4848-            return
+4849-        }
+4850-        if (screen == "catalog" && tab == 7 && tvSearchPanel != null && !nav[7].hasFocus()) {
+4851-            if (tvSearchPanel?.back() == true) return
+4852:            nav[7].requestFocus()
+4853-            return
+4854-        }
+4855-        if (screen == "catalog" && tab == 1 && !nav[1].hasFocus()) {
+4856:            nav[1].requestFocus()
+4857-            return
+4858-        }
+4859-        if (screen == "catalog" && tab == 2 && !nav[2].hasFocus() && !window.decorView.isInTouchMode) {
+4860-            rankingScreen?.backToTop()
+4861:            nav[2].requestFocus()
+4862-            return
+4863-        }
+4864-        when (screen) {
+--
+4884-                else if (collection != null) {
+4885-                    leaveCollection()
+4886-                    showCatalog()
+4887:                } else nav.getOrNull(tab)?.requestFocus()
+4888-        }
+4889-    }
+4890-
+
+app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
+36-            setImageResource(R.drawable.brand_mark)
+37-            scaleType = ImageView.ScaleType.FIT_CENTER
+38-            contentDescription = "hongguoTV"
+39:            isFocusable = false
+40-            (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
+41-        }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
+42-        destinations.forEach { (index, label) ->
+--
+46-                text = label
+47-                textSize = if (compact) 13f else 14f
+48-                maxLines = 1
+49:                isFocusable = true
+50:                isClickable = true
+51-                gravity = android.view.Gravity.CENTER_VERTICAL
+52-                setPadding(dp(10), dp(if (compact) 6 else 10), dp(8), dp(if (compact) 6 else 10))
+53-                compoundDrawablePadding = dp(9)
+--
+56-                fun paint() {
+57-                    paintNavigation(this)
+58-                }
+59:                setOnFocusChangeListener { _, _ -> paint() }
+60:                setOnClickListener {
+61-                    when {
+62-                        index == 9 -> scan(this)
+63-                        index != selectedDestination -> navigate(index)
+--
+113-    }
+114-
+115-    fun restoreContent(): Boolean {
+116:        val target = remembered?.takeIf { inContent(it) && it.isShown && it.isFocusable }
+117-            ?: body.getFocusables(FOCUS_FORWARD).firstOrNull()
+118:        return target?.requestFocus() == true
+119-    }
+120-
+121-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+--
+124-        if (index >= 0 && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+125-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)) {
+126-            if (event.action == KeyEvent.ACTION_DOWN) when (event.keyCode) {
+127:                KeyEvent.KEYCODE_DPAD_UP -> buttons[(index - 1).coerceAtLeast(0)].requestFocus()
+128:                KeyEvent.KEYCODE_DPAD_DOWN -> buttons[(index + 1).coerceAtMost(buttons.lastIndex)].requestFocus()
+129-                KeyEvent.KEYCODE_DPAD_RIGHT -> restoreContent()
+130-            }
+131-            return true
+--
+141-                val contentTarget = android.view.FocusFinder.getInstance()
+142-                    .findNextFocus(body, focused, direction)
+143-                    ?.takeIf { it !== focused && inContent(it) }
+144:                if (contentTarget != null) contentTarget.requestFocus()
+145:                else if (direction == FOCUS_UP) navigation[selectedDestination].requestFocus()
+146-                return true
+147-            }
+148-        }
+--
+150-            inContent(focused) && focused !is android.widget.AbsListView && focused !is HandlesHorizontalKeys) {
+151-            val next = focused?.focusSearch(FOCUS_LEFT)
+152-            if (next == null || !inContent(next) || next === focused) {
+153:                navigation[selectedDestination].requestFocus()
+154-                return true
+155-            }
+156-        }
+157-        val handled = super.dispatchKeyEvent(event)
+158-        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) && !inContent(findFocus())) {
+159:            focused?.requestFocus()
+160-            return true
+161-        }
+162-        return handled
