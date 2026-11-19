@@ -28,14 +28,16 @@ hongguoTV 原本以电视设备为主要交互场景，界面中的焦点移动�
 |---|---|---|
 | 应用名称 | 桌面标签显示为 `HGTV` | Nexus 9 实机确认 |
 | 页面交互 | 触摸点击适配，同时保留必要的遥控器/方向键行为 | Nexus 9 实机确认 |
-| 播放器菜单 | 点击视频区域显示或隐藏菜单 | Nexus 9 实机确认 |
+| 首次触摸焦点 | 7 个 Kotlin 文件共 10 处设置调整为触摸不抢占首次点击 | Nexus 9 实机确认（2026-11-19） |
+| 播放器菜单 | 点击视频区域显示或隐藏完整播放菜单 | Nexus 9 实机确认 |
+| 播放器手势 | 左滑下一集、右滑上一集；斜向滑动不切集 | Nexus 9 实机确认（2026-11-19） |
 | 播放器 | 保留进度条、选集、播放恢复、进度同步、音轨和清晰度等独立功能 | Nexus 9 实机确认 |
 | 手机控制台 | 移除手机控制台、扫码遥控器、局域网控制服务及专用测试 | Nexus 9 实机确认 |
 | 评论与弹幕 | 移除评论/剧评入口、弹幕设置和覆盖层，以及专用网络实现、测试和表情资源 | 源码扫描、回归测试、构建和真机验收通过 |
 | 文本与按键 | 保留 EditText 输入及播放器媒体/seek 按键处理 | 纳入实机验证 |
 | 进度条 | 不修改原有进度条行为 | 按定制范围保留 |
 
-详细记录见 [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md)。触摸/焦点历史修复的已知事实、自动检查边界和实机回归清单见 [TOUCH_FOCUS_CHECKLIST.md](TOUCH_FOCUS_CHECKLIST.md)。
+详细记录见 [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md)。触摸/焦点历史修复的已知事实、自动检查边界和实机回归清单见 [TOUCH_FOCUS_CHECKLIST.md](TOUCH_FOCUS_CHECKLIST.md)。 一键同步上游、隔离应用定制、测试并打包的维护方案见 [ONE_CLICK_UPDATE_BUILD_PLAN.md](ONE_CLICK_UPDATE_BUILD_PLAN.md)。
 
 ## 仓库关系与上游许可证
 
@@ -90,6 +92,8 @@ hongguoTV 原本以电视设备为主要交互场景，界面中的焦点移动�
    ```
 
 ## 日常同步与构建
+
+当前 `update_hgtv.sh` 是旧版同步构建脚本，适用于其约定的 `hgtv-custom` 分支与干净工作区；它不会自动从未分类的恢复工作区提取新修改。下一版隔离 worktree 的完整方案、能力边界和迁移待办见 [ONE_CLICK_UPDATE_BUILD_PLAN.md](ONE_CLICK_UPDATE_BUILD_PLAN.md)。
 
 在 **hongguoTV 源码仓库根目录**运行：
 
