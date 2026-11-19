@@ -1,1185 +1,1580 @@
-========== PHONE CONTROL CATALOG ==========
-// SPDX-License-Identifier: GPL-3.0-only
-package com.hongguotv.nativeapp
-
-import com.hongguotv.core.*
-import org.json.JSONArray
-import org.json.JSONObject
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-
-/** Main-thread snapshots. Retain at most 80 small cards, never bitmaps or complete result pages. */
-internal class PhoneControlCatalog(
-    private val library: Library,
-    private val account: AccountController,
-    private val play: (Series, CloudProgress?) -> Unit,
-) {
-    private data class Entry(val series: Series, val upcoming: Boolean, val reservable: Boolean, val artwork: String)
-    private val entries = linkedMapOf<String, Entry>()
-    private var scope = account.historyScope
-    var message = ""
-        private set
-    var revision = 0
-        private set
-    private var mutationPending = false
-    private var reservationId: String? = null
-    private var favoriteId: String? = null
-
-    fun login(credentials: AccountCredentials, scope: Int) = account.acceptConsoleLogin(credentials, scope)
-
-    fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null; favoriteId = null }
-
-    fun favoriteStatus(): JSONObject? {
-        val id = favoriteId ?: return null
-        return JSONObject().put("id", id).put("favorite", account.accountFavorite(id))
-            .put("pending", account.favoriteNeedsRefresh(id)).put("loading", account.favoriteState().loading)
-    }
-
-    fun reservationStatus(): JSONObject? {
-        val id = reservationId ?: return null
-        val entry = entries[id] ?: return null
-        return JSONObject().put("id", id).put("label", account.reservationLabel(RelatedWork(entry.series, "", true)))
-    }
-
-    fun checkScope() {
-        if (scope != account.historyScope) { clear(); scope = account.historyScope }
-    }
-
-    fun series(id: String): Series {
-        checkScope()
-        return entries[id]?.series ?: throw IllegalArgumentException("Expired card")
-    }
-
-    private fun safeCover(value: String, secureOnly: Boolean = true): String {
-        if (value.length > 8192 || value.any { it.isISOControl() }) return ""
-        val cleaned = value.trim().replace("\\/", "/")
-            .replace("\\u002F", "/", ignoreCase = true).replace("\\u0026", "&", ignoreCase = true)
-            .replace("&amp;", "&")
-        val absolute = if (cleaned.startsWith("//")) "https:$cleaned" else cleaned
-        val url = absolute.toHttpUrlOrNull() ?: return ""
-        if (url.username.isNotEmpty() || url.password.isNotEmpty()) return ""
-        // Match the TV HTTP client's URL encoding, while keeping the phone page HTTPS-only.
-        val secure = if (secureOnly && url.scheme == "http") url.newBuilder().scheme("https")
-            .port(if (url.port == 80) 443 else url.port).build() else url
-        return secure.toString().takeIf { it.length <= 8192 }.orEmpty()
-    }
-
-    fun cover(id: String, expectedScope: Int): String {
-        checkScope()
-        require(expectedScope == scope) { "账户已切换" }
-        return entries[id]?.artwork ?: throw IllegalArgumentException("Expired card")
-    }
-
-    private fun mergedSeries(rows: List<Series>): List<Series> = rows.groupBy { it.id }.values.map { versions ->
-        val first = versions.first()
-        first.copy(cover = versions.firstOrNull { safeCover(it.cover).isNotEmpty() }?.cover.orEmpty())
-    }
-
-    fun result(rows: List<RelatedWork>, hasMore: Boolean = false, status: String = ""): JSONObject {
-        checkScope()
-        val items = JSONArray()
-        rows.take(40).forEach { work ->
-            val source = work.series
-            val small = Series(source.id.take(64), source.title.take(200), cover = safeCover(source.cover), badge = source.badge.take(120))
-            entries.remove(small.id)
-            entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")), safeCover(source.cover, secureOnly = false))
-            while (entries.size > 80) entries.remove(entries.keys.first())
-            items.put(JSONObject().put("id", small.id).put("title", small.title).put("cover", small.cover).put("badge", work.label + " · " + small.badge)
-                .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")
-                .put("favorite", account.accountFavorite(small.id)).put("favoritePending", account.favoriteNeedsRefresh(small.id))
-                .put("playable", !work.upcoming).put("reservable", entries[small.id]!!.reservable).put("scope", scope))
-        }
-        return JSONObject().put("items", items).put("hasMore", hasMore).put("message", status)
-    }
-
-    fun list(body: JSONObject): JSONObject {
-        checkScope()
-        val kind = body.getString("kind")
-        val page = body.optInt("page", 1).also { require(it in 1..100) }
-        val refresh = body.optBoolean("refresh")
-        val cloud = kind in setOf("online", "upcoming")
-        if (cloud && !account.signedIn) return result(emptyList(), status = "请到「账户」登录红果")
-        var status = ""
-        var loading = false
-        val rows = when (kind) {
-            "favorites" -> {
-                if (refresh && account.signedIn) account.refreshFavorites()
-                status = if (account.signedIn) "本机与账户收藏合并显示 · " + account.favoriteState().message
-                    else "本机收藏 · 登录后在这里合并显示账户收藏"
-                loading = account.favoriteState().loading
-                mergedSeries(library.favorites() + account.favoriteState().rows.map { it.series })
-                    .map { RelatedWork(it, "", false) }
-            }
-            "history" -> {
-                if (refresh && account.signedIn) account.refreshHistory()
-                status = if (account.signedIn) "按最近观看排序 · " + account.historyStatus
-                    else "本机历史 · 登录后在这里合并显示账户历史"
-                loading = account.signedIn && account.historyLoading
-                val recent = (library.history().map { it.series to it.updatedAt } +
-                    account.historyRows().map { it.series to it.updatedAt }).sortedByDescending { it.second }
-                mergedSeries(recent.map { it.first }).map { RelatedWork(it, "", false) }
-            }
-            "online", "upcoming" -> {
-                if (refresh) account.refreshReservations()
-                val state = account.reservationState(kind == "online")
-                loading = state.loading
-                status = state.message + "；每类仅显示当前读取的最近 20 部"
-                state.rows.map { RelatedWork(it.series, "", !it.online) }
-            }
-            "localFavorites" -> library.favorites().map { RelatedWork(it, "", false) }
-            "localHistory" -> library.history().map { RelatedWork(it.series, "", false) }
-            "later" -> library.later().map { RelatedWork(it, "", false) }
-            else -> throw IllegalArgumentException("Unknown list")
-        }
-        return result(rows.drop((page - 1) * 20).take(20), rows.size > page * 20, status).put("loading", loading)
-    }
-
-    fun act(body: JSONObject): JSONObject {
-        checkScope()
-        val action = body.getString("action")
-        if (body.getInt("scope") != scope) return JSONObject().put("error", "账户已切换，请重新读取列表")
-        val entry = entries[body.getString("id")] ?: return JSONObject().put("error", "列表已过期，请重新读取")
-        when (action) {
-            "play" -> {
-                require(!entry.upcoming)
-                val progress = if (body.optString("source") == "history" && account.signedIn)
-                    account.progress(entry.series.id)?.takeIf { cloud ->
-                        val local = library.progress(entry.series.id)
-                        local == null || cloud.updatedAt > local.updatedAt
-                    } else null
-                play(entry.series, progress)
-                return JSONObject().put("message", "已发送到电视，正在准备播放")
-            }
-            "favorite", "reserve" -> {
-                if (!account.signedIn) return JSONObject().put("error", "请先到「账户」登录")
-                if (mutationPending || account.historyLoading) return JSONObject().put("error", "账户操作进行中，请稍候")
-                if (action == "reserve") { require(entry.reservable); reservationId = entry.series.id }
-                else { require(!entry.upcoming); favoriteId = entry.series.id }
-                mutationPending = true
-                val ticket = scope
-                val done: (String) -> Unit = { text ->
-                    if (ticket == account.historyScope) { mutationPending = false; message = text; revision++ }
-                }
-                message = "正在提交账户操作…"
-                try {
-                    if (action == "reserve") account.reserve(RelatedWork(entry.series, "", true), done)
-                    else account.changeFavorite(entry.series, body.getBoolean("add"), done)
-                } catch (e: Exception) { mutationPending = false; throw e }
-                return JSONObject().put("message", message)
-            }
-            else -> throw IllegalArgumentException("Unknown action")
-        }
-    }
-}
-
-========== PHONE CONSOLE ==========
-// SPDX-License-Identifier: GPL-3.0-only
-package com.hongguotv.nativeapp
-
-import android.app.Activity
-import android.net.ConnectivityManager
-import android.os.Handler
-import android.os.Looper
-import android.view.View
-import com.hongguotv.core.*
-import java.util.concurrent.FutureTask
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import okhttp3.ConnectionPool
-import okhttp3.OkHttpClient
-import okhttp3.ResponseBody
-import okio.ForwardingSource
-import okio.buffer
-import org.json.JSONObject
-import org.json.JSONArray
-
-/** Owns one foreground session; no background service, wake lock, web view or player. */
-internal class PhoneConsole(
-    private val activity: Activity,
-    private val tools: TvTools,
-    private val catalog: PhoneControlCatalog,
-    private val control: (JSONObject) -> JSONObject,
-    private val addressProvider: () -> String? = {
-        LanInputAddresses.find(activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager).firstOrNull()?.address
-    },
-    private val httpProvider: () -> OkHttpClient = { ContentRepository().http },
-    private val showSearch: (String, Int, CatalogPage) -> Unit,
-) {
-    private val main = Handler(Looper.getMainLooper())
-    private var session: Session? = null
-    private var starting = false
-    private var generation = 0
-    private var enabled = false
-    private var foreground = false
-    private var address: String? = null
-
-    private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean, val covers: PhoneCoverLoader) {
-        val browsing = AtomicBoolean(false)
-        val readingCover = AtomicBoolean(false)
-        val suggesting = AtomicBoolean(false)
-        val authenticating = AtomicBoolean(false)
-        var login: WebLogin? = null
-        var loginScope = 0
-        var resendAt = 0L
-        var qrExpiresAt = 0L
-        var pollAt = 0L
-        private var window = System.nanoTime()
-        private var commands = 0
-        @Synchronized fun allowCommand(): Boolean {
-            val now = System.nanoTime()
-            if (now - window >= TimeUnit.SECONDS.toNanos(1)) { window = now; commands = 0 }
-            return ++commands <= 12
-        }
-        lateinit var server: PhoneControlServer
-        fun close() {
-            active.set(false)
-            login?.cancel()
-            login = null
-            if (::server.isInitialized) server.close()
-            Thread({ http.dispatcher.cancelAll(); http.connectionPool.evictAll(); covers.close() }, "hongguotv-phone-cleanup").apply { isDaemon = true; start() }
-        }
-    }
-
-    fun resume() { foreground = true; if (enabled) start(null, false) }
-    fun stop() {
-        foreground = false
-        generation++
-        starting = false
-        session?.close()
-        session = null
-        address = null
-        catalog.clear()
-    }
-    fun disconnect() { enabled = false; stop(); foreground = true }
-    fun networkChanged() {
-        if (!foreground || !enabled) return
-        if (findAddress() != address) { stop(); foreground = true }
-        if (session == null) start(null, false)
-    }
-    private fun findAddress() = runCatching(addressProvider).getOrNull()
-
-    fun show(anchor: View?) {
-        enabled = true
-        start(anchor, true)
-    }
-
-    private fun start(anchor: View?, show: Boolean) {
-        if (!foreground || starting) return
-        session?.let { if (show) tools.phoneConsole(it.server.url, anchor, ::disconnect); return }
-        val selected = findAddress()
-        if (selected == null) {
-            if (show) tools.info("手机控制台", "请将手机与电视连接到可互通的 Wi-Fi 或有线局域网，然后重试。", anchor)
-            return
-        }
-        address = selected
-        starting = true
-        val ticket = ++generation
-        Thread({
-            val active = AtomicBoolean(true)
-            val http = httpProvider().newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS)
-                .callTimeout(12, TimeUnit.SECONDS)
-                .addInterceptor { chain ->
-                    if (!active.get()) throw java.io.IOException("Session closed")
-                    val response = chain.proceed(chain.request())
-                    val body = response.body ?: return@addInterceptor response
-                    if (body.contentLength() > 1024 * 1024) { response.close(); throw java.io.IOException("Metadata too large") }
-                    val limited = object : ForwardingSource(body.source()) {
-                        var count = 0L
-                        override fun read(sink: okio.Buffer, byteCount: Long): Long {
-                            val read = super.read(sink, minOf(byteCount, 8192))
-                            if (read > 0) count += read
-                            if (count > 1024 * 1024) throw java.io.IOException("Metadata too large")
-                            return read
-                        }
-                    }.buffer()
-                    response.newBuilder().body(object : ResponseBody() {
-                        override fun contentType() = body.contentType()
-                        override fun contentLength() = body.contentLength()
-                        override fun source() = limited
-                    }).build()
-                }.connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
-            val coverHttp = httpProvider().newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES)
-                .connectTimeout(3, TimeUnit.SECONDS).readTimeout(4, TimeUnit.SECONDS)
-                .callTimeout(6, TimeUnit.SECONDS).connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
-            val created = Session(http, ContentRepository(http), active, PhoneCoverLoader(coverHttp))
-            try {
-                created.server = PhoneControlServer(selected) { body -> request(created, body) }
-                main.post {
-                    if (ticket != generation || !foreground) { created.close(); return@post }
-                    starting = false
-                    session = created
-                    if (show) tools.phoneConsole(created.server.url, anchor, ::disconnect)
-                }
-            } catch (_: Exception) {
-                created.close()
-                main.post {
-                    if (ticket == generation) {
-                        starting = false
-                        if (show) tools.info("手机控制台", "无法开启连接，请检查局域网后重试。", anchor)
-                    }
-                }
-            }
-        }, "hongguotv-phone-start").apply { isDaemon = true; start() }
-    }
-
-    private fun <T> onMain(current: Session, action: () -> T): T {
-        val task = FutureTask {
-            check(current.active.get() && session === current && foreground) { "Session closed" }
-            action()
-        }
-        main.post(task)
-        return try { task.get(2, TimeUnit.SECONDS) }
-        finally { task.cancel(false); main.removeCallbacks(task) }
-    }
-
-    private fun request(current: Session, body: JSONObject): JSONObject {
-        val action = body.getString("action")
-        if (action != "status" && !current.allowCommand()) return JSONObject().put("error", "操作过快，请稍候再试")
-        if (action == "cover") {
-            require(!body.has("url"))
-            if (!current.readingCover.compareAndSet(false, true)) return JSONObject().put("error", "封面读取中，请稍后重试")
-            try {
-                val id = body.getString("id")
-                val scope = body.getInt("scope")
-                val url = onMain(current) { catalog.cover(id, scope) }
-                val image = current.covers.load(url)
-                return onMain(current) {
-                    check(catalog.cover(id, scope) == url)
-                    JSONObject().put("image", image)
-                }
-            } finally { current.readingCover.set(false) }
-        }
-        if (action in setOf("loginQr", "loginSend", "loginVerify", "loginPoll")) return login(current, body)
-        if (action in setOf("search", "related", "suggest", "discover")) {
-            val reading = if (action == "suggest") current.suggesting else current.browsing
-            if (!reading.compareAndSet(false, true)) return JSONObject().put("error", "正在读取，请稍候再试")
-            try {
-                val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
-                if (action == "suggest") {
-                    val query = body.getString("query").trim()
-                    require(query.length in 1..80 && query.none { it.isISOControl() })
-                    return JSONObject().put("items", JSONArray(current.repository.searchSuggestions(query).take(8).map { it.take(100) }))
-                }
-                if (action == "discover") {
-                    val raw = body.optJSONObject("filters") ?: JSONObject()
-                    val selection = DiscoverySelection(raw.keys().asSequence().associateWith { raw.getString(it) })
-                    val cursor = body.optJSONObject("cursor")?.let {
-                        DiscoveryCursor(it.getInt("offset"), it.getString("session"), it.getInt("page"))
-                    }
-                    val result = current.repository.filteredDiscovery(selection, cursor)
-                    return onMain(current) {
-                        check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
-                        catalog.result(result.items.map { RelatedWork(it, "", false) }, result.next != null)
-                            .put("groups", JSONArray(result.groups.map { group ->
-                                JSONObject().put("type", group.type).put("label", group.label)
-                                    .put("options", JSONArray(group.options.map { JSONObject().put("id", it.id).put("label", it.label) }))
-                            })).put("cursor", result.next?.let { JSONObject().put("offset", it.offset).put("session", it.session).put("page", it.page) })
-                    }
-                }
-                if (action == "related") {
-                    val series = onMain(current) { catalog.series(body.getString("id")) }
-                    val rows = current.repository.related(series.id).take(40)
-                    return onMain(current) {
-                        check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
-                        catalog.result(rows)
-                    }
-                }
-                val query = body.getString("query").trim()
-                val page = body.optInt("page", 1)
-                require(query.length in 1..80 && query.none { it.isISOControl() } && page in 1..100)
-                val result = current.repository.searchAll(query, page)
-                return onMain(current) {
-                    check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
-                    if (body.optBoolean("sync")) showSearch(query, page, result)
-                    catalog.result(result.items.map { RelatedWork(it, "", false) }, result.hasMore)
-                }
-            } finally { reading.set(false) }
-        }
-        return onMain(current) {
-            when (action) {
-                "list" -> catalog.list(body)
-                "play", "favorite", "reserve" -> catalog.act(body)
-                "disconnect" -> { main.postDelayed({ if (session === current) disconnect() }, 200); JSONObject().put("message", "正在断开") }
-                else -> { catalog.checkScope(); control(body) }
-            }
-        }
-    }
-    private fun login(current: Session, body: JSONObject): JSONObject {
-        if (!current.authenticating.compareAndSet(false, true)) return JSONObject().put("error", "登录处理中，请稍候")
-        try {
-            val action = body.getString("action")
-            val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
-            val now = android.os.SystemClock.elapsedRealtime()
-            if (current.login != null && current.loginScope != scope) {
-                current.login?.cancel(); current.login = null; current.qrExpiresAt = 0
-            }
-            if (action == "loginQr" || action == "loginSend") {
-                if (action == "loginSend" && now < current.resendAt)
-                    return JSONObject().put("error", "请等待倒计时结束再获取验证码")
-                val login = current.login ?: WebLogin(current.http).also { current.login = it; current.loginScope = scope }
-                check(current.loginScope == scope) { "账户已变化，请重新连接" }
-                if (action == "loginQr") {
-                    val qr = login.qr()
-                    require(qr.image.size <= 128 * 1024)
-                    current.qrExpiresAt = android.os.SystemClock.elapsedRealtime() + qr.expiresIn * 1000L
-                    return JSONObject().put("image", "data:image/png;base64," + android.util.Base64.encodeToString(qr.image, android.util.Base64.NO_WRAP))
-                        .put("expiresIn", qr.expiresIn).put("appUrl", qr.appUrl)
-                }
-                val mobile = PhoneLogin.parse(body.getString("mobile").also { require(it.length <= 32) })
-                current.qrExpiresAt = 0
-                current.resendAt = now + 60000
-                val sent = login.send(mobile)
-                val seconds = sent.retrySeconds.coerceIn(60, 300)
-                current.resendAt = android.os.SystemClock.elapsedRealtime() + seconds * 1000L
-                return JSONObject().put("retrySeconds", seconds).put("message", "验证码已发送")
-            }
-            val login = current.login ?: return JSONObject().put("error", "请先获取验证码或二维码")
-            check(current.loginScope == scope) { "账户已变化，请重新连接" }
-            val credentials = when (action) {
-                "loginVerify" -> login.verify(body.getString("code").also { require(it.matches(Regex("[0-9]{4,8}"))) })
-                "loginPoll" -> {
-                    if (current.qrExpiresAt == 0L) return JSONObject().put("error", "请先获取授权链接")
-                    if (now < current.pollAt) return JSONObject().put("pending", true)
-                    current.pollAt = now + 2000
-                    if (!login.poll()) return if (now >= current.qrExpiresAt) JSONObject().put("error", "授权已过期，请重新获取") else JSONObject().put("pending", true)
-                    login.credentials()
-                }
-                else -> throw IllegalArgumentException("Unknown login action")
-            }
-            onMain(current) { catalog.login(credentials, scope) }
-            current.login = null
-            return JSONObject().put("submitted", true).put("message", "验证成功，正在同步到电视…")
-        } catch (e: PhoneLogin.Failure) {
-            return JSONObject().put("error", e.message ?: "红果验证失败")
-        } finally { current.authenticating.set(false) }
-    }
-
-}
-
-========== PHONE COVER LOADER ==========
-// SPDX-License-Identifier: GPL-3.0-only
-package com.hongguotv.nativeapp
-
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.util.Base64
-import java.io.ByteArrayOutputStream
-import okhttp3.OkHttpClient
-import okhttp3.Request
-
-/** Session-local thumbnails, read on a phone worker, never on the television UI thread. */
-internal class PhoneCoverLoader(private val http: OkHttpClient) {
-    @Volatile private var closed = false
-    private val cache = linkedMapOf<String, String>()
-
-    fun load(url: String): String {
-        check(!closed)
-        if (url.isBlank()) return ""
-        synchronized(cache) { cache[url] }?.let { return it }
-        val bytes = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            check(response.isSuccessful) { "封面读取失败" }
-            val body = response.body ?: error("封面为空")
-            require(body.contentLength() <= 4 * 1024 * 1024) { "封面过大" }
-            val out = ByteArrayOutputStream()
-            val buffer = ByteArray(8192)
-            body.byteStream().use { input ->
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    require(out.size() + n <= 4 * 1024 * 1024) { "封面过大" }
-                    out.write(buffer, 0, n)
-                }
-            }
-            out.toByteArray()
-        }
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "封面格式无法识别" }
-        var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 480) sample *= 2
-        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
-            BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("封面解码失败")
-        val out = ByteArrayOutputStream()
-        try { check(decoded.compress(Bitmap.CompressFormat.JPEG, 80, out)) }
-        finally { decoded.recycle() }
-        require(out.size() <= 160 * 1024) { "缩略图过大" }
-        val image = "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-        synchronized(cache) {
-            check(!closed)
-            cache[url] = image
-            while (cache.size > 16) cache.remove(cache.keys.first())
-        }
-        return image
-    }
-
-    fun close() {
-        closed = true
-        http.dispatcher.cancelAll()
-        http.connectionPool.evictAll()
-        synchronized(cache) { cache.clear() }
-    }
-}
-
-========== PHONE CONSOLE TEST ==========
-package com.hongguotv.nativeapp
-
-import android.app.Activity
-import com.hongguotv.core.*
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
-import okhttp3.*
-import okhttp3.ResponseBody.Companion.toResponseBody
-import org.json.JSONObject
-import org.junit.Assert.*
-import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.Robolectric
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
-import org.robolectric.annotation.LooperMode
-import org.robolectric.shadows.ShadowLooper
-
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [21, 26])
-@LooperMode(LooperMode.Mode.PAUSED)
-class PhoneConsoleTest {
-    private fun get(target: Any, name: String) = target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
-    private fun waitFor(condition: () -> Boolean) {
-        val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
-        while (!condition() && System.nanoTime() < end) { ShadowLooper.idleMainLooper(); Thread.sleep(10) }
-        assertTrue(condition())
-    }
-    private fun server(console: PhoneConsole): PhoneControlServer? = get(console, "session")?.let { get(it, "server") as PhoneControlServer }
-    private fun call(server: PhoneControlServer, body: String = "{\"action\":\"status\"}", expectedStatus: Int = 200): String {
-        val uri = java.net.URI(server.url)
-        return java.net.Socket("127.0.0.1", uri.port).use { socket ->
-            socket.soTimeout = 3000
-            socket.getOutputStream().write(("POST ${uri.path}/api HTTP/1.1\r\nHost: ${uri.authority}\r\n" +
-                "Origin: http://${uri.authority}\r\nX-Control-Request: 1\r\nContent-Type: application/json\r\n" +
-                "Content-Length: ${body.toByteArray().size}\r\n\r\n$body").toByteArray())
-            val response = socket.getInputStream().readBytes().toString(Charsets.UTF_8)
-            check(response.startsWith("HTTP/1.1 $expectedStatus")) { response }
-            response.substringAfter("\r\n\r\n")
-        }
-    }
-    private fun fixture(http: OkHttpClient? = null, test: (PhoneConsole, TvTools, AtomicInteger) -> Unit) {
-        val activity = Robolectric.buildActivity(Activity::class.java).setup()
-        val tools = TvTools(activity.get())
-        val library = Library(activity.get())
-        val account = AccountController(activity.get()) {}
-        val count = AtomicInteger()
-        val catalog = PhoneControlCatalog(library, account) { _, _ -> }
-        val console = PhoneConsole(activity.get(), tools, catalog,
-            { count.incrementAndGet(); JSONObject().put("scope", 0) },
-            addressProvider = { "127.0.0.1" }, httpProvider = { http ?: ContentRepository().http }, showSearch = { _, _, _ -> })
-        try { test(console, tools, count) }
-        finally { console.stop(); tools.destroy(); library.close(); account.destroy(); activity.pause().stop().destroy() }
-    }
-
-    @Test fun phoneReceivesTvThumbnailWithoutDirectCdnAccessAndCannotSupplyAnArbitraryUrl() {
-        val bitmap = android.graphics.Bitmap.createBitmap(600, 900, android.graphics.Bitmap.Config.ARGB_8888)
-        bitmap.eraseColor(android.graphics.Color.RED)
-        val output = java.io.ByteArrayOutputStream()
-        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); bitmap.recycle()
-        val fetches = AtomicInteger()
-        val http = OkHttpClient.Builder().addInterceptor { chain ->
-            fetches.incrementAndGet()
-            assertEquals("http://example.com/poster.png", chain.request().url.toString())
-            assertNull(chain.request().header("Cookie"))
-            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .body(output.toByteArray().toResponseBody()).build()
-        }.build()
-        fixture(http) { console, _, _ ->
-            val catalog = get(console, "catalog") as PhoneControlCatalog
-            val row = catalog.result(listOf(RelatedWork(Series("123", "作品", cover = "http://example.com/poster.png"), "", true)))
-                .getJSONArray("items").getJSONObject(0)
-            val client = Executors.newSingleThreadExecutor()
-            try {
-                console.resume(); console.show(null); waitFor { server(console) != null }
-                fun request(body: JSONObject, status: Int = 200): JSONObject {
-                    val future = client.submit<String> { call(server(console)!!, body.toString(), status) }
-                    waitFor { future.isDone }; return JSONObject(future.get())
-                }
-                val body = JSONObject().put("action", "cover").put("id", "123").put("scope", row.getInt("scope"))
-                val image = request(body).getString("image")
-                assertTrue(image.startsWith("data:image/jpeg;base64,"))
-                val bytes = android.util.Base64.decode(image.substringAfter(','), android.util.Base64.DEFAULT)
-                val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                assertNotNull(decoded)
-                assertTrue(maxOf(decoded.width, decoded.height) <= 480)
-                decoded.recycle()
-                assertEquals(image, request(body).getString("image"))
-                assertEquals("Session cache avoids downloading the same cover twice", 1, fetches.get())
-                request(JSONObject(body.toString()).put("id", "999"), 400)
-                request(JSONObject(body.toString()).put("scope", -1), 400)
-                request(JSONObject(body.toString()).put("url", "http://127.0.0.1/private"), 400)
-                assertEquals(1, fetches.get())
-            } finally { client.shutdownNow() }
-        }
-    }
-
-    @Test fun closingQrKeepsSessionButStoppingRevokesItAndResumeRotatesToken() = fixture { console, tools, count ->
-        val client = Executors.newSingleThreadExecutor()
-        try {
-            console.resume()
-            assertNull(server(console)) // no listener before explicit opt-in
-            console.show(null)
-            waitFor { server(console) != null }
-            val original = server(console)!!
-            assertTrue(tools.dispatchPhoneKey(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_BACK)))
-            assertTrue(tools.dispatchPhoneKey(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_BACK)))
-            assertFalse(tools.showing)
-            val request = client.submit<String> { call(original) }
-            waitFor { request.isDone }
-            assertEquals(0, JSONObject(request.get()).getInt("scope"))
-            assertEquals(1, count.get())
-            console.stop()
-            assertTrue(runCatching { call(original) }.isFailure)
-            assertNull(server(console))
-            console.resume()
-            waitFor { server(console) != null }
-            assertNotEquals(original.url, server(console)!!.url)
-            console.disconnect()
-            console.resume()
-            assertNull(server(console))
-        } finally { client.shutdownNow() }
-    }
-
-    @Test fun stopDuringStartupDoesNotPublishLateServerOrDialog() = fixture { console, tools, _ ->
-        console.resume()
-        console.show(null)
-        console.stop()
-        // Drain the starter's completion; an expired generation must close its server.
-        Thread.sleep(200)
-        ShadowLooper.idleMainLooper()
-        assertNull(server(console))
-        assertFalse(tools.showing)
-    }
-    @Test fun phoneLoginKeepsCredentialsOffWireAndLimitsSmsResends() {
-        val requests = mutableListOf<String>()
-        val http = OkHttpClient.Builder().addInterceptor { chain ->
-            val request = chain.request()
-            requests += request.url.encodedPath
-            val data = when (request.url.encodedPath) {
-                "/passport/web/get_qrcode/" -> """{"token":"fixture","qrcode":"aW1hZ2U=","expire_time":60,"qrcode_index_url":"https://reading.snssdk.com/reading_offline/novelread/page/scan-code.html?token=fixture"}"""
-                "/passport/web/check_qrconnect/" -> """{"status":"1"}"""
-                "/passport/web/send_code/" -> """{"retry_time":60}"""
-                else -> error("Unexpected upstream request")
-            }
-            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
-                .addHeader("Set-Cookie", "passport_csrf_token=synthetic; Path=/; Secure")
-                .body("""{"message":"success","data":$data}""".toResponseBody()).build()
-        }.build()
-        fixture(http) { console, _, _ ->
-            val client = Executors.newSingleThreadExecutor()
-            try {
-                console.resume(); console.show(null); waitFor { server(console) != null }
-                fun request(body: String, expectedStatus: Int = 200): JSONObject {
-                    val future = client.submit<String> { call(server(console)!!, body, expectedStatus) }
-                    waitFor { future.isDone }
-                    return JSONObject(future.get())
-                }
-                val qr = request("""{"action":"loginQr"}""")
-                assertTrue(qr.getString("appUrl").startsWith("dragon8662://webview?url="))
-                assertFalse(qr.toString().contains("synthetic"))
-                assertTrue(request("""{"action":"loginPoll"}""").getBoolean("pending"))
-                request("""{"action":"loginPoll"}""")
-                assertEquals(1, requests.count { it.endsWith("check_qrconnect/") })
-                assertEquals(60, request("""{"action":"loginSend","mobile":"13800138000"}""").getInt("retrySeconds"))
-                assertTrue(request("""{"action":"loginSend","mobile":"13800138000"}""", 400).has("error"))
-                assertEquals(1, requests.count { it.endsWith("send_code/") })
-                assertFalse(request("""{"action":"loginPoll"}""", 400).optBoolean("submitted"))
-            } finally { client.shutdownNow() }
-        }
-    }
-
-}
-
-========== PHONE CATALOG TEST ==========
-package com.hongguotv.nativeapp
-
-import android.app.Activity
-import com.hongguotv.core.*
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.TimeUnit
-import org.json.JSONObject
-import org.junit.Assert.*
-import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.Robolectric
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
-import org.robolectric.annotation.LooperMode
-import org.robolectric.shadows.ShadowLooper
-
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [21, 26])
-@LooperMode(LooperMode.Mode.PAUSED)
-class PhoneControlCatalogTest {
-    private fun set(target: Any, name: String, value: Any?) {
-        target.javaClass.getDeclaredField(name).apply { isAccessible = true }.set(target, value)
-    }
-    private fun get(target: Any, name: String) = target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
-
-    private fun fixture(test: (PhoneControlCatalog, Library, AccountController, MutableList<Pair<Series, CloudProgress?>>) -> Unit) {
-        val activity = Robolectric.buildActivity(Activity::class.java).setup()
-        val library = Library(activity.get())
-        val account = AccountController(activity.get()) {}
-        try {
-            (get(account, "worker") as ExecutorService).submit {}.get(5, TimeUnit.SECONDS)
-            ShadowLooper.idleMainLooper()
-            set(library, "index", LibraryIndex(BackupData(emptyList(), emptyList(), emptySet(), emptyList(), BackupSettings())))
-            val played = mutableListOf<Pair<Series, CloudProgress?>>()
-            test(PhoneControlCatalog(library, account) { series, progress -> played += series to progress }, library, account, played)
-        } finally { account.destroy(); library.close(); activity.pause().stop().destroy() }
-    }
-    private fun list(kind: String, page: Int = 1) = JSONObject().put("kind", kind).put("page", page)
-    private fun action(name: String, id: String, scope: Int) = JSONObject().put("action", name).put("id", id).put("scope", scope)
-
-    @Test fun mergedListsDeduplicateBeforePaginationAndKeepGuestRecords() = fixture { catalog, library, account, _ ->
-        val local = (1..45).map { Series("$it", "本机 $it", cover = "https://example.com/large.jpg") }
-        set(library, "index", LibraryIndex(BackupData(local, emptyList(), emptySet(), emptyList(), BackupSettings())))
-        val first = catalog.list(list("favorites"))
-        assertEquals(20, first.getJSONArray("items").length())
-        assertTrue(first.getBoolean("hasMore"))
-        assertEquals("https://example.com/large.jpg", first.getJSONArray("items").getJSONObject(0).getString("cover"))
-        set(account, "credentials", AccountCredentials("private-cookie"))
-        set(account, "favorites", FavoriteState(listOf(CloudFavorite(local[0], 1), CloudFavorite(Series("99", "云端"), 0)), loaded = true))
-        val last = catalog.list(list("favorites", 3))
-        assertEquals(6, last.getJSONArray("items").length())
-        assertEquals("99", last.getJSONArray("items").getJSONObject(5).getString("id"))
-        assertFalse(last.getBoolean("hasMore"))
-        assertFalse(last.toString().contains("private-cookie"))
-        set(account, "credentials", null)
-        assertEquals(5, catalog.list(list("favorites", 3)).getJSONArray("items").length())
-    }
-
-    @Test fun mergedHistoryUsesNewestProgressAndFillsMissingCover() = fixture { catalog, library, account, played ->
-        val local = Series("1", "同一部剧")
-        val remote = local.copy(cover = "https://example.com/poster.jpg")
-        set(library, "index", LibraryIndex(BackupData(emptyList(),
-            listOf(BackupProgress(local, "ep-1", 0, 1000, 90000, false, 2000)), emptySet(), emptyList(), BackupSettings())))
-        set(account, "credentials", AccountCredentials("test-only"))
-        val older = CloudProgress(remote, "ep-2", 1, 5000, 90000, 1000)
-        val other = CloudProgress(Series("2", "最近观看"), "ep-3", 2, 6000, 90000, 3000)
-        set(account, "history", listOf(older, other))
-        val rows = catalog.list(list("history")).getJSONArray("items")
-        assertEquals(2, rows.length())
-        assertEquals("2", rows.getJSONObject(0).getString("id"))
-        assertEquals(remote.cover, rows.getJSONObject(1).getString("cover"))
-        catalog.act(action("play", "1", account.historyScope).put("source", "history"))
-        assertNull(played.last().second)
-        val newer = older.copy(updatedAt = 4000)
-        set(account, "history", listOf(newer, other))
-        assertEquals("1", catalog.list(list("history")).getJSONArray("items").getJSONObject(0).getString("id"))
-        catalog.act(action("play", "1", account.historyScope).put("source", "history"))
-        assertEquals(newer, played.last().second)
-    }
-
-    @Test fun coverRelayPreservesTelevisionUrlAndRejectsExpiredCardsAndScope() = fixture { catalog, _, _, _ ->
-        val items = catalog.result(listOf(RelatedWork(Series("123", "封面", cover = "http://example.com/a b.jpg"), "", false)))
-            .getJSONArray("items")
-        val scope = items.getJSONObject(0).getInt("scope")
-        assertEquals("http://example.com/a%20b.jpg", catalog.cover("123", scope))
-        assertThrows(IllegalArgumentException::class.java) { catalog.cover("123", scope + 1) }
-        assertThrows(IllegalArgumentException::class.java) { catalog.cover("unlisted", scope) }
-        catalog.clear()
-        assertThrows(IllegalArgumentException::class.java) { catalog.cover("123", scope) }
-    }
-
-    @Test fun coversOnlyExposeBoundedHttpsUrls() = fixture { catalog, _, _, _ ->
-        val urls = listOf("javascript:alert(1)", "file:///secret", "https://user:pass@example.com/a", "https://example.com/" + "a".repeat(8192), "https://example.com/poster.jpg")
-        val rows = catalog.result(urls.mapIndexed { i, url -> RelatedWork(Series("$i", "剧", cover = url), "", false) }).getJSONArray("items")
-        (0..3).forEach { assertEquals("", rows.getJSONObject(it).getString("cover")) }
-        assertEquals(urls.last(), rows.getJSONObject(4).getString("cover"))
-    }
-
-    @Test fun discoveryAndUpcomingCoversKeepUsableUrlsAndSignedQueries() = fixture { catalog, _, _, _ ->
-        val signed = "https://example.com/cover.webp?signature=" + "a".repeat(2300) + "&expires=123"
-        val inputs = listOf("http://example.com/cover.jpg", "//example.com/cover.jpg", "https://example.com/a b.jpg?size=100&amp;v=2", signed)
-        for (upcoming in listOf(false, true)) {
-            val items = catalog.result(inputs.mapIndexed { i, url -> RelatedWork(Series("${i+1}", "作品", cover = url), "", upcoming) }).getJSONArray("items")
-            assertEquals("https://example.com/cover.jpg", items.getJSONObject(0).getString("cover"))
-            assertEquals("https://example.com/cover.jpg", items.getJSONObject(1).getString("cover"))
-            assertEquals("https://example.com/a%20b.jpg?size=100&v=2", items.getJSONObject(2).getString("cover"))
-            assertEquals(signed, items.getJSONObject(3).getString("cover"))
-            assertEquals(!upcoming, items.getJSONObject(0).getBoolean("playable"))
-        }
-    }
-
-    @Test fun onlyCurrentBoundedCardsCanTriggerPlayback() = fixture { catalog, _, account, played ->
-        repeat(4) { page -> catalog.result((1..40).map { RelatedWork(Series("${page * 40 + it}", "标题"), "", false) }) }
-        assertEquals(80, (get(catalog, "entries") as Map<*, *>).size)
-        assertTrue(catalog.act(action("play", "1", account.historyScope)).has("error"))
-        assertFalse(catalog.act(action("play", "160", account.historyScope)).has("error"))
-        assertEquals("160", played.single().first.id)
-        assertEquals("", played.single().first.cover)
-    }
-
-    @Test fun accountSwitchInvalidatesOldCardsAndMutations() = fixture { catalog, _, account, played ->
-        val old = account.historyScope
-        catalog.result(listOf(RelatedWork(Series("123", "剧"), "", false)))
-        set(account, "generation", old + 1)
-        assertTrue(catalog.act(action("play", "123", old)).getString("error").contains("切换"))
-        assertTrue(catalog.act(action("favorite", "123", old).put("add", true)).has("error"))
-        assertTrue(played.isEmpty())
-        assertTrue((get(catalog, "entries") as Map<*, *>).isEmpty())
-    }
-
-    @Test fun unpublishedReservationsNeverPlayAndOnlyVerifiedRelatedIdsAreReservable() = fixture { catalog, _, account, played ->
-        set(account, "credentials", AccountCredentials("test-only"))
-        set(account, "reservations", mapOf(false to ReservationState(listOf(CloudReservation(Series("reservation:123", "未上线"), false, 0)), loaded = true)))
-        val item = catalog.list(list("upcoming")).getJSONArray("items").getJSONObject(0)
-        assertFalse(item.getBoolean("playable"))
-        assertFalse(item.getBoolean("reservable"))
-        assertTrue(runCatching { catalog.act(action("play", item.getString("id"), account.historyScope)) }.isFailure)
-        assertTrue(played.isEmpty())
-        val related = catalog.result(listOf(RelatedWork(Series("456", "下一季"), "第二季", true)))
-        assertTrue(related.getJSONArray("items").getJSONObject(0).getBoolean("reservable"))
-        assertTrue(runCatching { catalog.act(action("play", "456", account.historyScope)) }.isFailure)
-    }
-
-    @Test fun cloudHistoryPassesExactProgressAndLocalPlaybackDoesNotUseIt() = fixture { catalog, _, account, played ->
-        val series = Series("123", "历史")
-        val progress = CloudProgress(series, "episode-3", 2, 42000, 80000, 1)
-        set(account, "credentials", AccountCredentials("test-only"))
-        set(account, "history", listOf(progress))
-        catalog.list(list("history"))
-        catalog.act(action("play", "123", account.historyScope).put("source", "history"))
-        assertEquals(progress, played.single().second)
-        catalog.act(action("play", "123", account.historyScope).put("source", "localHistory"))
-        assertNull(played.last().second)
-    }
-
-    @Test fun loadingStatesAreExposedWithoutStartingRepeatedRefreshes() = fixture { catalog, _, account, _ ->
-        set(account, "credentials", AccountCredentials("test-only"))
-        set(account, "favorites", FavoriteState(loading = true, message = "正在读取"))
-        assertTrue(catalog.list(list("favorites")).getBoolean("loading"))
-        set(account, "favorites", FavoriteState(loaded = true))
-        assertFalse(catalog.list(list("favorites")).getBoolean("loading"))
-    }
-}
-
-========== CLOUD RESUME PHONE TEST CONTEXT ==========
-        assertEquals("player", get(activity, "screen"))
-        assertEquals(index, get(activity, "episodeIndex"))
-        assertEquals(position, get(activity, "startPosition"))
-    }
-
-    @Test
-    fun homeStartsPlaybackAndBackOpensEpisodesEvenWithControlsVisible() =
-        fixture { activity, _, _ ->
-            open(activity, true, fromHome = true)
-            assertPlayback(activity, 2, 45000)
-            assertEquals(false, get(activity, "directPlayback"))
-            set(activity, "waitingForFirstFrame", false)
-            (get(activity, "hud") as View).visibility = View.VISIBLE
-            MainActivity::class.java.getDeclaredMethod("goBack").apply { isAccessible = true }.invoke(activity)
-            assertEquals("detail", get(activity, "screen"))
-            assertEquals(false, get(activity, "homePlayback"))
-        }
-
-
-    @Test
-    fun phonePushBackOpensCurrentDetailDuringLoadingAndWithEitherHudState() {
-        for (waiting in listOf(true, false)) for (visible in listOf(true, false)) {
-            fixture { activity, _, account ->
-                val catalog = MainActivity::class.java.getDeclaredMethod("getPhoneCatalog")
-                    .apply { isAccessible = true }.invoke(activity) as PhoneControlCatalog
-                catalog.result(listOf(RelatedWork(series, "", false)))
-                catalog.act(org.json.JSONObject().put("action", "play").put("id", series.id)
-                    .put("scope", account.historyScope).put("source", "history"))
-                (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
-                ShadowLooper.idleMainLooper()
-                assertPlayback(activity, 2, 45000)
-                assertEquals(true, get(activity, "phonePlayback"))
-                set(activity, "waitingForFirstFrame", waiting)
-                (get(activity, "hud") as View).visibility = if (visible) View.VISIBLE else View.GONE
-                MainActivity::class.java.getDeclaredMethod("goBack").apply { isAccessible = true }.invoke(activity)
-                assertEquals("detail", get(activity, "screen"))
-                assertEquals(series.id, (get(activity, "detail") as Detail).series.id)
-                assertEquals(2, get(activity, "episodeIndex"))
-                assertEquals(false, get(activity, "phonePlayback"))
-                assertEquals(false, get(activity, "directPlayback"))
-                assertTrue(texts(activity.findViewById(android.R.id.content)).any { it.contentDescription == "第 3 集" })
-            }
-        }
-    }
-
-    @Test
-    fun cloudHistoryUsesItsEpisodeNumberAndPositionEvenWhenIdsDiffer() =
-        fixture { activity, library, _ ->
-            library.save(WatchProgress(series, "102", 1, 12000, 90000, false, 3000))
-            open(activity, true, cloud)
-            assertPlayback(activity, 2, 45000)
-            assertEquals("102", library.progress(series.id)!!.episodeId)
-        }
-
-    @Test
-    fun homepageDetailShowsAndPlaysCloudResumeWithoutImportingItIntoLocalHistory() =
-        fixture { activity, library, _ ->
-            open(activity, false)
-            assertEquals("detail", get(activity, "screen"))
-            assertNull(library.progress(series.id))
-            val root = activity.findViewById<View>(android.R.id.content)
-
-========== PHONE CONTROL CORE IMPLEMENTATION ==========
-// SPDX-License-Identifier: GPL-3.0-only
-package com.hongguotv.core
-
-import java.io.ByteArrayOutputStream
-import java.io.Closeable
-import java.io.IOException
-import java.net.InetAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.security.SecureRandom
-import java.util.Locale
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import org.json.JSONObject
-
-/** Foreground-only LAN control. Two workers, two queued sockets, no retained response cache. */
-class PhoneControlServer(address: String, private val request: (JSONObject) -> JSONObject) : Closeable {
-    private val closed = AtomicBoolean()
-    private val clients = java.util.Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
-    private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2),
-        { task -> Thread(task, "hongguotv-phone-control").apply { isDaemon = true } })
-    private val local = InetAddress.getByName(address).also {
-        require(it.isLoopbackAddress || it.isSiteLocalAddress)
-    }
-    private val listener = ServerSocket(0, 4, local)
-    private val token = ByteArray(24).also { SecureRandom().nextBytes(it) }
-        .joinToString("") { "%02x".format(it.toInt() and 255) }
-    private val host = "${local.hostAddress}:${listener.localPort}"
-    val url = "http://$host/$token"
-    private val acceptor = Thread({ serve() }, "hongguotv-phone-listener").apply { isDaemon = true; start() }
-
-    private fun serve() {
-        try {
-            while (!closed.get()) {
-                val socket = listener.accept()
-                clients.add(socket)
-                try {
-                    workers.execute {
-                        try { socket.use { if (!closed.get()) handle(it) } }
-                        catch (_: Exception) { /* Disconnected, malformed or expired request. */ }
-                        finally { clients.remove(socket) }
-                    }
-                } catch (_: java.util.concurrent.RejectedExecutionException) {
-                    clients.remove(socket)
-                    socket.close()
-                }
-            }
-        } catch (_: IOException) { /* close interrupts accept */ }
-        finally { close() }
-    }
-
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
-        runCatching { listener.close() }
-        clients.forEach { runCatching { it.close() } }
-        clients.clear()
-        workers.shutdownNow()
-    }
-
-    internal fun awaitClosed(): Boolean {
-        acceptor.join(2000)
-        return !acceptor.isAlive && workers.awaitTermination(2, TimeUnit.SECONDS)
-    }
-
-    private fun handle(socket: Socket) {
-        if (!socket.inetAddress.let { it.isSiteLocalAddress || it.isLoopbackAddress }) return
-        socket.soTimeout = 1500
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
-        val input = socket.getInputStream().buffered()
-        fun read(): Int {
-            if (closed.get() || System.nanoTime() >= deadline) throw IOException("Request expired")
-            return input.read()
-        }
-        fun line(max: Int): String {
-            val out = ByteArrayOutputStream()
-            while (out.size() < max) {
-                val next = read()
-                if (next < 0) throw IOException("EOF")
-                if (next == 10) return out.toString("US-ASCII").trimEnd('\r')
-                out.write(next)
-            }
-            throw IOException("Header too long")
-        }
-        val first = line(1024).split(' ')
-        if (first.size != 3 || first[2] != "HTTP/1.1") return
-        val headers = mutableMapOf<String, String>()
-        var total = 0
-        while (true) {
-            val row = line(2048)
-            total += row.length + 2
-            if (total > 8192) return reply(socket, 431, "{}")
-            if (row.isEmpty()) break
-            val at = row.indexOf(':')
-            if (at <= 0 || headers.put(row.substring(0, at).lowercase(Locale.ROOT), row.substring(at + 1).trim()) != null)
-                return reply(socket, 400, "{}")
-        }
-        if (headers["host"] != host || first[1] !in listOf("/$token", "/$token/api"))
-            return reply(socket, 404, "{}")
-        if (headers["sec-fetch-site"] == "cross-site" ||
-            (headers["origin"] != null && headers["origin"] != "http://$host"))
-            return reply(socket, 403, "{}")
-        if (first[0] == "GET" && first[1] == "/$token")
-            return reply(socket, 200, PhoneControlPage.html(token), html = true)
-        if (first[0] != "POST" || first[1] != "/$token/api") return reply(socket, 405, "{}")
-        // Custom header + exact Origin prevent cross-site forms/fetch from issuing commands.
-        if (headers["origin"] != "http://$host" || headers["x-control-request"] != "1")
-            return reply(socket, 403, "{}")
-        if (headers.containsKey("transfer-encoding") || headers["content-type"]?.substringBefore(';') != "application/json")
-            return reply(socket, 400, "{}")
-        val length = headers["content-length"]?.toIntOrNull()?.takeIf { it in 2..4096 }
-            ?: return reply(socket, 413, "{}")
-        val bytes = ByteArray(length)
-        for (i in bytes.indices) { val b = read(); if (b < 0) return; bytes[i] = b.toByte() }
-        val body = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull()
-            ?: return reply(socket, 400, "{}")
-        if (closed.get()) return
-        val result = try { request(body) }
-            catch (_: IllegalArgumentException) { JSONObject().put("error", "参数无效，请刷新页面重试") }
-            catch (_: Exception) { JSONObject().put("error", "操作未完成，请稍后重试或检查电视状态") }
-        val response = result.toString()
-        if (response.toByteArray(Charsets.UTF_8).size > 256 * 1024)
-            return reply(socket, 413, "{\"error\":\"结果过大，请缩小查询范围\"}")
-        reply(socket, if (result.has("error")) 400 else 200, response)
-    }
-
-    private fun reply(socket: Socket, code: Int, text: String, html: Boolean = false) {
-        val bytes = text.toByteArray(Charsets.UTF_8)
-        val headers = "HTTP/1.1 $code Response\r\nContent-Type: ${if (html) "text/html" else "application/json"}; charset=utf-8\r\n" +
-            "Content-Length: ${bytes.size}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n" +
-            "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-$token'; connect-src 'self'; img-src data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\r\n"
-        socket.getOutputStream().apply { write(headers.toByteArray(Charsets.US_ASCII)); write(bytes); flush() }
-    }
-}
-// SPDX-License-Identifier: GPL-3.0-only
-package com.hongguotv.core
-
-/** All rendering stays on the phone. Artwork thumbnails arrive through the TV session; no remote image requests or video on the phone. */
-internal object PhoneControlPage {
-    fun html(nonce: String) = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hongguoTV · 手机控制台</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#203044;color:#f5f5f7;font:16px system-ui,sans-serif}main{max-width:700px;margin:auto;padding:20px 18px 40px}h1{font-size:23px;margin:6px 0}h2{font-size:21px}h3{font-size:17px}button,input,select,a.action{font:inherit;border-radius:10px;padding:11px 13px;border:1px solid #475063;background:#30435a;color:inherit;min-height:44px}button{cursor:pointer}button:disabled{opacity:.45}button.primary,a.action.primary{background:#e95342;border-color:#e95342}a.action{display:inline-block;text-decoration:none}a{color:#ffad9b}[hidden]{display:none!important}.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}input[type=search],input[type=tel],input.code{flex:1;min-width:0;width:100%}.searchbox{display:flex;gap:8px;margin:18px 0 8px}.card{background:#2c3e54;border:1px solid #465b76;border-radius:14px;padding:16px;margin:12px 0}.muted{color:#acb8ca;font-size:14px;line-height:1.6}#notice{color:#ffd0a0;margin:8px 0;line-height:1.5}#notice:empty{display:none}#rows h3{margin:0 0 8px}label{display:inline-flex;align-items:center;gap:6px}input[type=number]{width:84px}.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:sticky;top:0;background:#203044;padding:14px 0;z-index:2}.tabs button{border-color:transparent;background:none}.tabs button[aria-selected=true],.library-tabs button[aria-selected=true],button[aria-pressed=true]{background:#392822;border-color:#df735b;color:#ffb19d}.subtabs{display:flex;gap:8px;margin:12px 0}.subtabs button{flex:1}.chips{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 8px}.chips button{white-space:normal;max-width:100%;overflow-wrap:anywhere;font-size:14px;padding:8px 13px;flex-shrink:0}.filter h3{font-size:14px;margin:8px 0 2px;color:#acb8ca}.suggestions{display:grid;gap:4px}.suggestions button{text-align:left;background:#2c3e54;border-color:transparent}summary{cursor:pointer;padding:12px 0;min-height:44px}#qrImage{width:220px;max-width:100%;background:white;padding:8px;border-radius:12px}.library-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.library-tabs button{padding:10px 4px}.filter{background:#2c3e54;border:1px solid #465b76;border-radius:12px;padding:6px 12px;margin:10px 0}.filter summary{font-size:14px;color:#acb8ca}.filter-more{margin:4px 0 8px;color:#ffb19d}.series-head{display:flex;gap:14px;align-items:flex-start}.series-info{min-width:0;overflow-wrap:anywhere}.poster{flex:0 0 84px;width:84px;height:112px;border-radius:8px;overflow:hidden;background:#203044;display:flex;align-items:center;justify-content:center;color:#acb8ca;font-size:13px}.poster img{width:100%;height:100%;object-fit:cover}.series-info h3{margin:0 0 8px}.series-info p{margin:0}.playback-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}small{display:block}header .muted{margin:4px 0}.empty{padding:20px 0;color:#acb8ca}#loginPanel input{margin:5px 0}#loginNote{min-height:22px;line-height:1.5;color:#ffd0a0}
-</style></head>
-<body><main><header><!-- brand:start --><h1 style="display:flex;align-items:center;gap:10px"><img width="48" height="40" style="object-fit:contain;image-rendering:pixelated" src="data:image/png;base64,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" alt=""/>hongguoTV</h1><!-- brand:end --><p class="muted" id="connection">正在连接电视…</p></header>
-<nav class="tabs" role="tablist" aria-label="主要功能"><button id="tab-browse" role="tab" aria-controls="panel-browse" data-tab="browse" aria-selected="true">找剧</button><button id="tab-player" role="tab" aria-controls="panel-player" data-tab="player" aria-selected="false">播放</button><button id="tab-library" role="tab" aria-controls="panel-library" data-tab="library" aria-selected="false">片单</button><button id="tab-account" role="tab" aria-controls="panel-account" data-tab="account" aria-selected="false">账户</button></nav>
-<p id="notice" role="status" aria-live="polite"></p>
-<section id="panel-browse" role="tabpanel" aria-labelledby="tab-browse">
-<div class="searchbox"><input id="query" type="search" maxlength="80" autocomplete="off" placeholder="搜剧名、演员" aria-label="搜索剧名或演员" aria-controls="suggestions"><button class="primary" id="search">搜索</button></div>
-<div id="suggestions" class="suggestions" aria-label="搜索联想" hidden></div>
-<div class="subtabs"><button id="searchMode" aria-pressed="true">搜索</button><button id="discoverMode" aria-pressed="false">按标签找剧</button></div>
-<div id="filters" hidden></div><div id="browseHost"></div>
-</section>
-<section id="panel-player" role="tabpanel" aria-labelledby="tab-player" hidden>
-<h2 id="playing">电视未在剧集播放页</h2><p id="position" class="muted"></p>
-<div class="playback-grid"><button data-cmd="previous">上一集</button><button class="primary" id="togglePlay">暂停</button><button data-cmd="next">下一集</button></div>
-<div class="row"><button data-cmd="backward">−15 秒</button><button data-cmd="forward">+15 秒</button></div>
-<div class="card"><div class="row"><label>倍速<select id="speed"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>1.75</option><option>2</option><option>3</option></select></label><label>清晰度<select id="quality"><option>480</option><option>720</option><option selected>1080</option></select></label></div><div class="row"><label>第<input id="episode" type="number" min="1" value="1">集</label><button id="jump">播放此集</button></div></div>
-<p class="muted">在「找剧」或「片单」选一部剧，即可在电视播放。</p></section>
-<section id="panel-library" role="tabpanel" aria-labelledby="tab-library" hidden>
-<h2>我的片单</h2><nav class="library-tabs" role="tablist" aria-label="片单分类"><button id="library-favorites" role="tab" aria-controls="libraryHost" data-library="favorites" aria-selected="true">收藏</button><button id="library-history" role="tab" aria-controls="libraryHost" data-library="history" aria-selected="false">历史</button><button id="library-online" role="tab" aria-controls="libraryHost" data-library="online" aria-selected="false">预约</button><button id="library-later" role="tab" aria-controls="libraryHost" data-library="later" aria-selected="false">稍后看</button></nav>
-<div id="loginGate" class="card" hidden><p>登录红果后，在这里查看已上线的预约。</p><button id="goLogin" class="primary">在手机登录</button></div><div id="libraryHost" role="tabpanel" aria-labelledby="library-favorites"></div></section>
-<section id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden><h2>红果账户</h2><p id="accountLabel"></p><p id="accountStatus" class="muted"></p>
-<div id="loginPanel" class="card"><h3>在手机登录，同步到电视</h3><button id="prepareApp" class="primary">红果 App 授权登录</button><p><a id="openApp" class="action primary" hidden rel="noreferrer">打开红果 App 授权</a></p><p id="appHint" class="muted">手机红果 App 需先登录。授权后返回此页，电视自动登录。</p><details id="smsDetails"><summary>手机号验证码登录</summary><p class="muted">使用红果手机号验证，成功后这台电视自动登录。</p><label for="mobile">手机号（支持 +国家码）</label><input id="mobile" type="tel" autocomplete="tel" maxlength="32" placeholder="请输入手机号"><div class="row"><button id="sendCode">获取验证码</button></div><label for="code">短信验证码</label><input id="code" class="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="请输入验证码"><button id="verifyCode" class="primary">登录并同步到电视</button>
-</details><p id="loginNote" role="status"></p><details id="qrDetails"><summary>改用红果 App 扫码授权</summary><p class="muted">用红果 App「我的 → 扫一扫」扫描此码；同一手机可尝试从相册识别。授权后返回本页，电视会自动同步。</p><button id="getQr">显示授权二维码</button><div id="qrBox" hidden><p><img id="qrImage" alt="红果登录授权二维码"></p><p id="qrNote" class="muted"></p></div></details></div>
-<button id="switchAccount" hidden>换个账户登录</button><details><summary>连接设置</summary><p class="muted">同一局域网可用。电视退出应用后连接失效，需要重新扫码。</p><button id="disconnect">断开所有手机</button></details></section>
-<div id="listArea"><div class="row"><button id="backList" hidden>返回原列表</button><button id="refresh">刷新列表</button><span id="page" class="muted"></span><button id="retry" hidden>重试</button></div><div id="rows"></div><div class="row" id="pagination"><button id="prev">上一页</button><button id="next">下一页</button></div></div>
-<script nonce="$nonce">
-(function () {
-'use strict';
-var tab='browse', browseMode='search', mode='search', page=1, keyword='', busy=false, commandBusy=false, stopped=false, polling=false;
-var timer,listTimer,view=0,lastData=null,shownContext=null,returnList=null,related=false;
-var revision=null,accountScope=null,refreshNeeded=false,accountChanged=false,retryAction=null,signedIn=false,playing=false;
-var libraryKind='favorites',filterOpen={},filterLimits={},filterBatch=8;
-var selection={},cursors=[null],groups=[],suggestTimer,suggestVersion=0,suggestPending=false;
-var loginBusy=false,qrPending=false,qrDeadline=0,qrTimer,qrPolling=false,resendAt=0,countdown,loginSubmitted=false,changingAccount=false,submittedScope=null;
-var by=function(id){return document.getElementById(id)};
-function note(text){by('notice').textContent=text||''}
-function api(data){
-  var controller=typeof AbortController==='undefined'?null:new AbortController();
-  var timeout=controller?setTimeout(function(){controller.abort()},25000):null;
-  return fetch(location.pathname+'/api',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Request':'1'},body:JSON.stringify(data),cache:'no-store',signal:controller?controller.signal:undefined})
-    .then(function(r){return r.json().then(function(v){if(!r.ok||v.error)throw Error(v.error||'请求未完成');return v})})
-    .then(function(v){clearTimeout(timeout);return v},function(e){clearTimeout(timeout);throw Error(e.name==='AbortError'?'连接超时，请重试':e.message)});
-}
-function button(text,action){
-  var b=document.createElement('button');b.textContent=text;
-  b.onclick=function(){if(busy)return;busy=true;b.disabled=true;
-    Promise.resolve().then(action).catch(function(e){note(e.message)}).then(function(){
-      busy=false;b.disabled=b.getAttribute('data-pending')==='true';
-    });
-  };return b;
-}
-function command(action,extra){return api(Object.assign({action:action},extra||{})).then(function(v){note(v.message);return v})}
-function nav(){
- by('searchMode').setAttribute('aria-pressed',String(browseMode==='search'));by('discoverMode').setAttribute('aria-pressed',String(browseMode==='discover'));
- by('filters').hidden=tab!=='browse'||browseMode!=='discover';
-}
-function cloudList(){return mode==='online'}
-function gate(){var gated=tab==='library'&&cloudList()&&!signedIn;by('loginGate').hidden=!gated;by('listArea').hidden=gated;return gated}
-function changeTab(next){
- tab=next;Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'),function(b){var selected=b.getAttribute('data-tab')===tab;b.setAttribute('aria-selected',String(selected));by('panel-'+b.getAttribute('data-tab')).hidden=!selected});
- clearTimeout(listTimer);clearTimeout(qrTimer);hideSuggestions();note('');
- if(tab==='browse'||tab==='library'){
-  by(tab==='browse'?'browseHost':'libraryHost').appendChild(by('listArea'));
-  var nextMode=tab==='browse'?browseMode:libraryKind;
-  if(mode!==nextMode){view++;mode=nextMode;page=1;related=false;returnList=null;shownContext=null;render({items:[]});}
-  nav();if(!gate()&&!related){if(mode!=='search'||keyword)load(true);else emptySearch()}
- }else{by('listArea').hidden=true;if(tab==='account'){if(!signedIn&&!qrPending&&!loginBusy&&!loginSubmitted)prepareQr(false);else pollQr()}}
-}
-function emptySearch(){by('rows').textContent='输入剧名，或切换到「按标签找剧」。';by('rows').className='empty';by('pagination').hidden=true;by('page').textContent='';by('refresh').hidden=true}
-function hideSuggestions(){clearTimeout(suggestTimer);suggestVersion++;by('suggestions').hidden=true;by('suggestions').textContent=''}
-function searchFor(value){if(!value.trim())return;hideSuggestions();keyword=value.trim();by('query').value=keyword;browseMode='search';mode='search';page=1;nav();load(false)}
-function suggest(){
- var value=by('query').value.trim(),token=++suggestVersion;if(!value||tab!=='browse'){hideSuggestions();return}
- if(suggestPending){suggestTimer=setTimeout(suggest,350);return}suggestPending=true;
- api({action:'suggest',query:value}).then(function(v){if(token!==suggestVersion||tab!=='browse')return;by('suggestions').textContent='';(v.items||[]).slice(0,8).forEach(function(t){var b=document.createElement('button');b.textContent=t;b.onclick=function(){searchFor(t)};by('suggestions').appendChild(b)});by('suggestions').hidden=!by('suggestions').children.length}).catch(function(){}).then(function(){suggestPending=false});
-}
-function renderFilters(){
- by('filters').textContent='';
- groups.forEach(function(g,index){
-  var collapsible=index>=2,section=document.createElement(collapsible?'details':'section');section.className='filter';section.setAttribute('data-filter',g.type);
-  if(collapsible){section.open=filterOpen[g.type]!==false;section.ontoggle=function(){if(document.documentElement.contains(section))filterOpen[g.type]=section.open}}
-  var title=document.createElement(collapsible?'summary':'h3');
-  var selected=(g.options||[]).find(function(o){return o.id===selection[g.type]});
-  title.textContent=g.label+(selected?' · '+selected.label:'');section.appendChild(title);
-  var row=document.createElement('div');row.className='chips';
-  var options=[{id:'',label:'全部'}].concat(g.options||[]),selectedIndex=options.findIndex(function(o){return o.id===selection[g.type]});
-  var limit=Math.max(filterLimits[g.type]||filterBatch,selectedIndex+1);
-  options.slice(0,limit).forEach(function(o){
-   var b=document.createElement('button');b.textContent=o.label;b.setAttribute('aria-pressed',String((selection[g.type]||'')===o.id));
-   b.onclick=function(){if(busy)return;if(g.type==='genre')selection={};if(o.id)selection[g.type]=o.id;else delete selection[g.type];page=1;cursors=[null];load(false)};row.appendChild(b);
-  });
-  section.appendChild(row);
-  if(limit<options.length){var more=document.createElement('button');more.className='filter-more';more.textContent='展示更多';more.setAttribute('aria-label',g.label+'：展示更多');more.onclick=function(){filterLimits[g.type]=limit+filterBatch;renderFilters();var target=Array.prototype.find.call(by('filters').children,function(el){return el.getAttribute('data-filter')===g.type});if(target){var next=target.querySelector('.filter-more')||target.querySelector('.chips button:last-child');if(next)next.focus()}};section.appendChild(more)}
-  by('filters').appendChild(section);
- });
-}
-
-var coverQueue=[],coverActive=false,coverObserver=null,coverEpoch=0;
-function nextCover(){
- if(coverActive||!coverQueue.length||stopped)return;
- if(busy||commandBusy){setTimeout(nextCover,150);return}
- var job=coverQueue.shift();
- if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster)){nextCover();return}
- coverActive=true;
- api({action:'cover',id:job.item.id,scope:job.item.scope}).then(function(v){
-  if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster))return;
-  job.poster.textContent='';
-  if(!v.image){job.poster.textContent='暂无封面';return}
-  if(!/^data:image\/jpeg;base64,/.test(v.image))throw Error('封面格式异常');
-  var image=document.createElement('img');image.alt=job.item.title+' 封面';image.decoding='async';
-  image.onerror=function(){coverRetry(job)};image.src=v.image;job.poster.appendChild(image);
- }).catch(function(){if(job.epoch===coverEpoch)coverRetry(job)}).then(function(){coverActive=false;setTimeout(nextCover,120)});
-}
-
-========== STATUS ==========
-## recovery/hgtv-custom-0166
+========== MAIN ACTIVITY PLAYBACK DIFF ==========
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
+index 89f74c4..3213ec9 100644
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
++++ b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
+@@ -42,104 +42,6 @@ class MainActivity : Activity() {
+     private val main = Handler(Looper.getMainLooper())
+     private val io = Executors.newFixedThreadPool(3)
+     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
+-    private val phoneCatalog by lazy {
+-        PhoneControlCatalog(library, cloudAccount) { series, progress ->
+-            // Save while the old detail still identifies the playing episode.
+-            saveProgress()
+-            library.flush()
+-            releasePlayer()
+-            tvTools.close()
+-            openDetail(series, resume = true, cloudProgress = progress, fromPhone = true)
+-        }
+-    }
+-    private val phoneConsole by lazy {
+-        PhoneConsole(this, tvTools, phoneCatalog, ::phoneControl) { keyword, requestedPage, result ->
+-            saveProgress()
+-            releasePlayer()
+-            library.rememberSearch(keyword, ContentType.SHORT)
+-            searchDraft = keyword
+-            query = keyword
+-            submittedSearch = keyword
+-            collection = null
+-            tab = 7
+-            page = requestedPage
+-            catalog = result.items
+-            hasMore = result.hasMore
+-            catalogFocus = ""
+-            showCatalog(false)
+-        }
+-    }
+-
+-    private fun phoneControl(body: JSONObject): JSONObject {
+-        val action = body.getString("action")
+-        val active = screen == "player" && detail != null
+-        if (action == "status") return JSONObject()
+-            .put("active", active).put("title", if (active) detail?.series?.title.orEmpty() else "")
+-            .put("episode", if (active) episodeIndex + 1 else 0)
+-            .put("episodes", if (active) detail?.episodes?.size ?: 0 else 0)
+-            .put("position", if (active) currentPosition() else 0)
+-            .put("duration", if (active) player?.duration?.coerceAtLeast(0) ?: 0 else 0)
+-            .put("playing", active && player?.isPlaying == true)
+-            .put("speed", library.playbackSpeed).put("quality", library.maxQuality)
+-            .put("scope", cloudAccount.historyScope).put("account", cloudAccount.accountLabel)
+-            .put("signedIn", cloudAccount.signedIn).put("accountStatus", cloudAccount.status)
+-            .put("message", phoneCatalog.message).put("reservation", phoneCatalog.reservationStatus())
+-            .put("catalogRevision", phoneCatalog.revision).put("favorite", phoneCatalog.favoriteStatus())
+-        if (action == "account") {
+-            tvTools.close()
+-            cloudAccount.show()
+-            return JSONObject().put("message", "请在电视完成账户操作")
+-        }
+-        if (action == "key") {
+-            val key = when (body.getString("value")) {
+-                "up" -> KeyEvent.KEYCODE_DPAD_UP
+-                "down" -> KeyEvent.KEYCODE_DPAD_DOWN
+-                "left" -> KeyEvent.KEYCODE_DPAD_LEFT
+-                "right" -> KeyEvent.KEYCODE_DPAD_RIGHT
+-                "ok" -> KeyEvent.KEYCODE_DPAD_CENTER
+-                "back" -> KeyEvent.KEYCODE_BACK
+-                else -> throw IllegalArgumentException("Unknown key")
+-            }
+-            for (event in listOf(KeyEvent(KeyEvent.ACTION_DOWN, key), KeyEvent(KeyEvent.ACTION_UP, key))) {
+-                if (!tvTools.dispatchPhoneKey(event) && !cloudAccount.dispatchPhoneKey(event) &&
+-                    episodePanel?.dispatchPhoneKey(event) != true) dispatchKeyEvent(event)
+-            }
+-            return JSONObject().put("message", "已发送遥控指令")
+-        }
+-        if (!active) return JSONObject().put("error", "请先选择剧目并在电视播放；首页可使用方向遥控")
+-        when (action) {
+-            "pause" -> requestPlayback(false)
+-            "resume" -> requestPlayback(true)
+-            "previous" -> skipEpisode(-1)
+-            "next" -> skipEpisode(1)
+-            "backward", "forward" -> {
+-                if (!playbackReady) return JSONObject().put("error", "播放器尚未准备完成")
+-                seekTo(currentPosition() + if (action == "forward") 15000 else -15000)
+-            }
+-            "episode" -> {
+-                val index = body.getInt("value") - 1
+-                require(index in detail!!.episodes.indices)
+-                playEpisode(index)
+-            }
+-            "speed" -> {
+-                val speed = body.getDouble("value").toFloat()
+-                require(speed in PlaybackSpeed.options)
+-                library.playbackSpeed = speed
+-                player?.setPlaybackSpeed(speed)
+-            }
+-            "quality" -> {
+-                val quality = body.getInt("value")
+-                require(quality in PlaybackQuality.options)
+-                if (library.maxQuality != quality) {
+-                    library.maxQuality = quality
+-                    playEpisode(episodeIndex, currentPosition(), player?.playWhenReady ?: requestedAutoplay)
+-                }
+-            }
+-            else -> throw IllegalArgumentException("Unknown command")
+-        }
+-        return JSONObject().put("message", "已执行")
+-    }
+-
+     // 榜单专用并行加载通道：最多四榜各自在途、互不取消，与全局单飞 work() 隔离。
+     private val rankWorker = Executors.newFixedThreadPool(3)
+     private val networkCleanup = Executors.newSingleThreadExecutor()
+@@ -236,7 +138,6 @@ class MainActivity : Activity() {
+     private lateinit var playbackTitle: TextView
+     private var homePlayback = false
+     private var directPlayback = false
+-    private var phonePlayback = false
+     private var collection: String? = null
+     private var hotContentType = ContentType.COMIC
+     private var collectionReturn: CatalogState? = null
+@@ -357,7 +258,6 @@ class MainActivity : Activity() {
+         object : ConnectivityManager.NetworkCallback() {
+             private fun changed() {
+                 main.post {
+-                    phoneConsole.networkChanged()
+                     if (connectivity.isActiveNetworkMetered || !networkAvailable()) cancelPrefetch()
+                     if (foreground && screen == "player" && playError && autoRecovery)
+                         scheduleRecovery()
+@@ -1057,7 +957,7 @@ class MainActivity : Activity() {
+         invalidatePage()
+         screen = "catalog"
+         releaseCatalogViews()
+-        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this, phone = { anchor -> phoneConsole.show(anchor) }) { next -> switchTab(next) }.also {
++        val shell = catalogShell?.takeIf { it.parent === root } ?: CatalogShell(this) { next -> switchTab(next) }.also {
+             root.removeAllViews()
+             root.setBackgroundColor(TvStyle.background)
+             root.addView(it, FrameLayout.LayoutParams(-1, -1))
+@@ -2406,7 +2306,6 @@ class MainActivity : Activity() {
+                         setPadding(0, 0, 0, dp(14))
+                     })
+                     setting("登录与账户管理") { cloudAccount.show() }
+-                    setting("手机控制台 · 搜索 / 遥控 / 账户片单") { phoneConsole.show(null) }
+                 }
+                 4 -> {
+                     lateinit var about: TextView
+@@ -2531,7 +2430,6 @@ class MainActivity : Activity() {
+         cloudProgress: CloudProgress? = null,
+         fromRelated: Boolean = false,
+         fromHome: Boolean = false,
+-        fromPhone: Boolean = false,
+     ) {
+         if (!fromRelated) detailTrail.clear()
+         relatedSection = null
+@@ -2545,7 +2443,6 @@ class MainActivity : Activity() {
+         releaseCatalogViews()
+         screen = "detail"
+         homePlayback = fromHome
+-        phonePlayback = fromPhone
+         directPlayback = resume && !fromHome
+         detail = null
+         synopsisExpanded = false
+@@ -2585,7 +2482,7 @@ class MainActivity : Activity() {
+                 error(body, problem) {
+                     if (cloudProgress != null && accountScope != cloudAccount.historyScope)
+                         showCatalog()
+-                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome, fromPhone)
++                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome)
+                 }
+             },
+         )
+@@ -4859,10 +4756,9 @@ class MainActivity : Activity() {
+         library.flush()
+         invalidatePage()
+         releasePlayer()
+-        if (directPlayback && !forceDetail && !phonePlayback) showCatalog()
++        if (directPlayback && !forceDetail) showCatalog()
+         else {
+             directPlayback = false
+-            phonePlayback = false
+             showDetail(true)
+         }
+     }
+@@ -4907,7 +4803,7 @@ class MainActivity : Activity() {
+         }
+         when (screen) {
+             "player" ->
+-                if (homePlayback || phonePlayback) returnToDetail(forceDetail = true)
++                if (homePlayback) returnToDetail(forceDetail = true)
+                 else if (waitingForFirstFrame) returnToDetail()
+                 else if (hud.visibility == View.VISIBLE && !playError) hidePlaybackOverlay()
+                 else returnToDetail()
+@@ -5027,7 +4923,6 @@ class MainActivity : Activity() {
+ 
+     override fun onResume() {
+         super.onResume()
+-        phoneConsole.resume()
+         foreground = true
+         startGradualPreloading()
+         gradualPreloader?.resume()
+@@ -5060,7 +4955,6 @@ class MainActivity : Activity() {
+                                         directPlayback,
+                                         autoplay = false,
+                                         cloudProgress = cloud.takeIf { directPlayback },
+-                                        fromPhone = phonePlayback,
+                                     )
+                                 }
+                             } ?: showCatalog()
+@@ -5109,7 +5003,6 @@ class MainActivity : Activity() {
+ 
+     // 应用离开前台时暂停播放及后台活动，防止页面不可见时继续消耗资源。
+     override fun onStop() {
+-        phoneConsole.stop()
+         homeFeed?.close()
+         homeFeed = null
+         restoreStoppedPage = true
+@@ -5135,7 +5028,6 @@ class MainActivity : Activity() {
+ 
+     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
+     override fun onDestroy() {
+-        phoneConsole.stop()
+         gradualPreloader?.close()
+         generation++
+         cancelWork()
+...skipping...
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+
+                           JUMPING
+
+  g  <  ESC-<       *  Go to first line in file (or line N).
+  G  >  ESC->       *  Go to last line in file (or line N).
+  p  %              *  Go to beginning of file (or N percent into file).
+  t                 *  Go to the (N-th) next tag.
+  T                 *  Go to the (N-th) previous tag.
+  {  (  [           *  Find close bracket } ) ].
+  }  )  ]           *  Find open bracket { ( [.
+  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
+  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
+        ---------------------------------------------------
+        Each "find close bracket" command goes forward to the close bracket 
+          matching the (N-th) open bracket in the top line.
+        Each "find open bracket" command goes backward to the open bracket 
+          matching the (N-th) close bracket in the bottom line.
+
+  m<letter>            Mark the current top line with <letter>.
+  M<letter>            Mark the current bottom line with <letter>.
+  '<letter>            Go to a previously marked position.
+  ''                   Go to the previous position.
+  ^X^X                 Same as '.
+  ESC-m<letter>        Clear a mark.
+        ---------------------------------------------------
+        A mark is any upper-case or lower-case letter.
+        Certain marks are predefined:
+             ^  means  beginning of the file
+             $  means  end of the file
+ ---------------------------------------------------------------------------
+
+                        CHANGING FILES
+
+  :e [file]            Examine a new file.
+  ^X^V                 Same as :e.
+  :n                *  Examine the (N-th) next file from the command line.
+  :p                *  Examine the (N-th) previous file from the command line.
+  :x                *  Examine the first (or N-th) file from the command line.
+  ^O^O                 Open the currently selected OSC8 hyperlink.
+  :d                   Delete the current file from the command line list.
+  =  ^G  :f            Print current file name.
+ ---------------------------------------------------------------------------
+
+                    MISCELLANEOUS COMMANDS
+
+  -<flag>              Toggle a command line option [see OPTIONS below].
+  --<name>             Toggle a command line option, by name.
+  _<flag>              Display the setting of a command line option.
+  __<name>             Display the setting of an option, by name.
+  +cmd                 Execute the less cmd each time a new file is examined.
+
+  !command             Execute the shell command with $SHELL.
+  #command             Execute the shell command, expanded like a prompt.
+  |Xcommand            Pipe file between current pos & mark X to shell command.
+  s file               Save input to a file.
+  v                    Edit the current file with $VISUAL or $EDITOR.
+  V                    Print version number of "less".
+ ---------------------------------------------------------------------------
+
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+Cannot write to "-n 2418,2495p app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt"  (press R
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+
+                           JUMPING
+
+  g  <  ESC-<       *  Go to first line in file (or line N).
+  G  >  ESC->       *  Go to last line in file (or line N).
+  p  %              *  Go to beginning of file (or N percent into file).
+  t                 *  Go to the (N-th) next tag.
+  T                 *  Go to the (N-th) previous tag.
+  {  (  [           *  Find close bracket } ) ].
+  }  )  ]           *  Find open bracket { ( [.
+  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
+  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
+        ---------------------------------------------------
+        Each "find close bracket" command goes forward to the close bracket 
+          matching the (N-th) open bracket in the top line.
+        Each "find open bracket" command goes backward to the open bracket 
+          matching the (N-th) close bracket in the bottom line.
+
+  m<letter>            Mark the current top line with <letter>.
+  M<letter>            Mark the current bottom line with <letter>.
+  '<letter>            Go to a previously marked position.
+  ''                   Go to the previous position.
+  ^X^X                 Same as '.
+  ESC-m<letter>        Clear a mark.
+        ---------------------------------------------------
+        A mark is any upper-case or lower-case letter.
+        Certain marks are predefined:
+             ^  means  beginning of the file
+             $  means  end of the file
+ ---------------------------------------------------------------------------
+
+                        CHANGING FILES
+
+  :e [file]            Examine a new file.
+  ^X^V                 Same as :e.
+  :n                *  Examine the (N-th) next file from the command line.
+  :p                *  Examine the (N-th) previous file from the command line.
+  :x                *  Examine the first (or N-th) file from the command line.
+  ^O^O                 Open the currently selected OSC8 hyperlink.
+  :d                   Delete the current file from the command line list.
+  =  ^G  :f            Print current file name.
+ ---------------------------------------------------------------------------
+
+                    MISCELLANEOUS COMMANDS
+
+  -<flag>              Toggle a command line option [see OPTIONS below].
+  --<name>             Toggle a command line option, by name.
+  _<flag>              Display the setting of a command line option.
+  __<name>             Display the setting of an option, by name.
+  +cmd                 Execute the less cmd each time a new file is examined.
+
+  !command             Execute the shell command with $SHELL.
+  #command             Execute the shell command, expanded like a prompt.
+  |Xcommand            Pipe file between current pos & mark X to shell command.
+  s file               Save input to a file.
+  v                    Edit the current file with $VISUAL or $EDITOR.
+  V                    Print version number of "less".
+ ---------------------------------------------------------------------------
+
+                           OPTIONS
+
+        Most options may be changed either on the command line,
+        or from within less by using the - or -- command.
+        Options may be given in one of two forms: either a single
+        character preceded by a -, or a name preceded by --.
+
+  -?  ........  --help
+                  Display help (from command line).
+  -a  ........  --search-skip-screen
+                  Search skips current screen.
+  -A  ........  --SEARCH-SKIP-SCREEN
+                  Search starts just after target line.
+  -b [N]  ....  --buffers=[N]
+                  Number of buffers.
+  -B  ........  --auto-buffers
+                  Don't automatically allocate buffers for pipes.
+  -c  ........  --clear-screen
+                  Repaint by clearing rather than scrolling.
+  -d  ........  --dumb
+                  Dumb terminal.
+  -D xcolor  .  --color=xcolor
+                  Set screen colors.
+  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
+                  Quit at end of file.
+  -f  ........  --force
+                  Force open non-regular files.
+  -F  ........  --quit-if-one-screen
+                  Quit if entire file fits on first screen.
+  -g  ........  --hilite-search
+                  Highlight only last match for searches.
+  -G  ........  --HILITE-SEARCH
+                  Don't highlight any matches for searches.
+  -h [N]  ....  --max-back-scroll=[N]
+                  Backward scroll limit.
+  -i  ........  --ignore-case
+                  Ignore case in searches that do not contain uppercase.
+  -I  ........  --IGNORE-CASE
+                  Ignore case in all searches.
+  -j [N]  ....  --jump-target=[N]
+                  Screen position of target lines.
+  -J  ........  --status-column
+                  Display a status column at left edge of screen.
+  -k file  ...  --lesskey-file=file
+                  Use a compiled lesskey file.
+  -K  ........  --quit-on-intr
+                  Exit less in response to ctrl-C.
+  -L  ........  --no-lessopen
+                  Ignore the LESSOPEN environment variable.
+  -m  -M  ....  --long-prompt  --LONG-PROMPT
+                  Set prompt style.
+  -n .........  --line-numbers
+                  Suppress line numbers in prompts and messages.
+  -N .........  --LINE-NUMBERS
+                  Display line number at start of each line.
+  -o [file] ..  --log-file=[file]
+                  Copy to log file (standard input only).
+  -O [file] ..  --LOG-FILE=[file]
+                  Copy to log file (unconditionally overwrite).
+  -p pattern .  --pattern=[pattern]
+                  Start at pattern (from command line).
+/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
+  -P [prompt]   --prompt=[prompt]
+                  Define new prompt.
+  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
+                  Quiet the terminal bell.
+  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
+                  Output "raw" control characters.
+  -s  ........  --squeeze-blank-lines
+                  Squeeze multiple blank lines.
+  -S  ........  --chop-long-lines
+                  Chop (truncate) long lines rather than wrapping.
+  -t tag  ....  --tag=[tag]
+                  Find a tag.
+  -T [tagsfile] --tag-file=[tagsfile]
+                  Use an alternate tags file.
+  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
+                  Change handling of backspaces, tabs and carriage returns.
+  -V  ........  --version
+                  Display the version number of "less".
+  -w  ........  --hilite-unread
+                  Highlight first new line after forward-screen.
+  -W  ........  --HILITE-UNREAD
+Cannot write to "-n 80,110p app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt"  
+  -k file  ...  --lesskey-file=file
+                  Use a compiled lesskey file.
+  -K  ........  --quit-on-intr
+                  Exit less in response to ctrl-C.
+  -L  ........  --no-lessopen
+                  Ignore the LESSOPEN environment variable.
+  -m  -M  ....  --long-prompt  --LONG-PROMPT
+                  Set prompt style.
+  -n .........  --line-numbers
+                  Suppress line numbers in prompts and messages.
+  -N .........  --LINE-NUMBERS
+                  Display line number at start of each line.
+  -o [file] ..  --log-file=[file]
+                  Copy to log file (standard input only).
+  -O [file] ..  --LOG-FILE=[file]
+                  Copy to log file (unconditionally overwrite).
+  -p pattern .  --pattern=[pattern]
+                  Start at pattern (from command line).
+  -P [prompt]   --prompt=[prompt]
+                  Define new prompt.
+  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
+                  Quiet the terminal bell.
+  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
+                  Output "raw" control characters.
+  -s  ........  --squeeze-blank-lines
+                  Squeeze multiple blank lines.
+  -S  ........  --chop-long-lines
+                  Chop (truncate) long lines rather than wrapping.
+  -t tag  ....  --tag=[tag]
+                  Find a tag.
+  -T [tagsfile] --tag-file=[tagsfile]
+                  Use an alternate tags file.
+  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
+                  Change handling of backspaces, tabs and carriage returns.
+  -V  ........  --version
+                  Display the version number of "less".
+  -w  ........  --hilite-unread
+                  Highlight first new line after forward-screen.
+  -W  ........  --HILITE-UNREAD
+                  Highlight first new line after any forward movement.
+  -x [N[,...]]  --tabs=[N[,...]]
+                  Set tab stops.
+  -X  ........  --no-init
+                  Don't use termcap init/deinit strings.
+  -y [N]  ....  --max-forw-scroll=[N]
+                  Forward scroll limit.
+  -z [N]  ....  --window=[N]
+                  Set size of window.
+  -" [c[c]]  .  --quotes=[c[c]]
+                  Set shell quote characters.
+  -~  ........  --tilde
+                  Don't display tildes after end of file.
+  -# [N]  ....  --shift=[N]
+                  Set horizontal scroll amount (0 = one half screen width).
+
+                --exit-follow-on-close
+                  Exit F command on a pipe when writer closes pipe.
+                --file-size
+                  Automatically determine the size of the input file.
+                --follow-name
+                  The F command changes files if the input file is renamed.
+                --header=[L[,C[,N]]]
+                  Use L lines (starting at line N) and C columns as headers.
+                --incsearch
+                  Search file as each pattern character is typed in.
+                --intr=[C]
+                  Use C instead of ^X to interrupt a read.
+                --lesskey-context=text
+                  Use lesskey source file contents.
+                --lesskey-src=file
+                  Use a lesskey source file.
+                --line-num-width=[N]
+                  Set the width of the -N line number field to N characters.
+                --match-shift=[N]
+                  Show at least N characters to the left of a search match.
+                --modelines=[N]
+                  Read N lines from the input file and look for vim modelines.
+                --mouse
+                  Enable mouse input.
+                --no-keypad
+                  Don't send termcap keypad init/deinit strings.
+                  Don't send termcap keypad init/deinit strings.
+                --no-histdups
+                  Remove duplicates from command history.
+                --no-number-headers
+                  Don't give line numbers to header lines.
+                --no-search-header-lines
+                  Searches do not include header lines.
+                --no-search-header-columns
+                  Searches do not include header columns.
+                --no-search-headers
+                  Searches do not include header lines or columns.
+                --no-vbell
+                  Disable the terminal's visual bell.
+                --redraw-on-quit
+                  Redraw final screen when quitting.
+                --rscroll=[C]
+                  Set the character used to mark truncated lines.
+                --save-marks
+                  Retain marks across invocations of less.
+                --search-options=[EFKNRW-]
+                  Set default options for every search.
+                --show-preproc-errors
+                  Display a message if preprocessor exits with an error status.
+                --proc-backspace
+                  Process backspaces for bold/underline.
+                --PROC-BACKSPACE
+                  Treat backspaces as control characters.
+                --proc-return
+                  Delete carriage returns before newline.
+                --PROC-RETURN
+                  Treat carriage returns as control characters.
+                --proc-tab
+                  Expand tabs to spaces.
+                --PROC-TAB
+                  Treat tabs as control characters.
+                --status-col-width=[N]
+                  Set the width of the -J status column to N characters.
+                --status-line
+                  Highlight or color the entire line containing a mark.
+                --use-backslash
+                  Subsequent options use backslash as escape char.
+                --use-color
+                  Enables colored text.
+                --wheel-lines=[N]
+                  Each click of the mouse wheel moves N lines.
+                --wordwrap
+                  Wrap lines at spaces.
+
+
+ ---------------------------------------------------------------------------
+
+                          LINE EDITING
+
+        These keys can be used to edit text being entered 
+        on the "command line" at the bottom of the screen.
+
+ RightArrow ..................... ESC-l ... Move cursor right one character.
+ LeftArrow ...................... ESC-h ... Move cursor left one character.
+ ctrl-RightArrow  ESC-RightArrow  ESC-w ... Move cursor right one word.
+ ctrl-LeftArrow   ESC-LeftArrow   ESC-b ... Move cursor left one word.
+ HOME ........................... ESC-0 ... Move cursor to start of line.
+ END ............................ ESC-$ ... Move cursor to end of line.
+ BACKSPACE ................................ Delete char to left of cursor.
+ DELETE ......................... ESC-x ... Delete char under cursor.
+ ctrl-BACKSPACE   ESC-BACKSPACE ........... Delete word to left of cursor.
+ ctrl-DELETE .... ESC-DELETE .... ESC-X ... Delete word under cursor.
+ ctrl-U ......... ESC (MS-DOS only) ....... Delete entire line.
+ UpArrow ........................ ESC-k ... Retrieve previous command line.
+ DownArrow ...................... ESC-j ... Retrieve next command line.
+ TAB ...................................... Complete filename & cycle.
+ SHIFT-TAB ...................... ESC-TAB   Complete filename & reverse cycle.
+ ctrl-L ................................... Complete filename, list all.
+~
+
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+...skipping...
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+...skipping...
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+
+                           JUMPING
+
+  g  <  ESC-<       *  Go to first line in file (or line N).
+  G  >  ESC->       *  Go to last line in file (or line N).
+  p  %              *  Go to beginning of file (or N percent into file).
+  t                 *  Go to the (N-th) next tag.
+  T                 *  Go to the (N-th) previous tag.
+  {  (  [           *  Find close bracket } ) ].
+  }  )  ]           *  Find open bracket { ( [.
+  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
+  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
+        ---------------------------------------------------
+        Each "find close bracket" command goes forward to the close bracket 
+          matching the (N-th) open bracket in the top line.
+        Each "find open bracket" command goes backward to the open bracket 
+          matching the (N-th) close bracket in the bottom line.
+
+
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+...skipping...
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+  n                 *  Repeat previous search (for N-th occurrence).
+/bin/bash: -c: 行 1: 寻找匹配的 `'' 时遇到了未预期的 EOF
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+
+                           JUMPING
+
+  g  <  ESC-<       *  Go to first line in file (or line N).
+  G  >  ESC->       *  Go to last line in file (or line N).
+  p  %              *  Go to beginning of file (or N percent into file).
+  t                 *  Go to the (N-th) next tag.
+  T                 *  Go to the (N-th) previous tag.
+  {  (  [           *  Find close bracket } ) ].
+  }  )  ]           *  Find open bracket { ( [.
+  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
+  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
+        ---------------------------------------------------
+        Each "find close bracket" command goes forward to the close bracket 
+          matching the (N-th) open bracket in the top line.
+        Each "find open bracket" command goes backward to the open bracket 
+          matching the (N-th) close bracket in the bottom line.
+
+  m<letter>            Mark the current top line with <letter>.
+  M<letter>            Mark the current bottom line with <letter>.
+  '<letter>            Go to a previously marked position.
+  ''                   Go to the previous position.
+  ^X^X                 Same as '.
+  ESC-m<letter>        Clear a mark.
+        ---------------------------------------------------
+        A mark is any upper-case or lower-case letter.
+        Certain marks are predefined:
+             ^  means  beginning of the file
+             $  means  end of the file
+ ---------------------------------------------------------------------------
+
+                        CHANGING FILES
+
+  :e [file]            Examine a new file.
+  ^X^V                 Same as :e.
+  :n                *  Examine the (N-th) next file from the command line.
+  :p                *  Examine the (N-th) previous file from the command line.
+  :x                *  Examine the first (or N-th) file from the command line.
+  ^O^O                 Open the currently selected OSC8 hyperlink.
+  :d                   Delete the current file from the command line list.
+  =  ^G  :f            Print current file name.
+ ---------------------------------------------------------------------------
+
+                    MISCELLANEOUS COMMANDS
+
+  -<flag>              Toggle a command line option [see OPTIONS below].
+  --<name>             Toggle a command line option, by name.
+  _<flag>              Display the setting of a command line option.
+  __<name>             Display the setting of an option, by name.
+  +cmd                 Execute the less cmd each time a new file is examined.
+
+  !command             Execute the shell command with $SHELL.
+  #command             Execute the shell command, expanded like a prompt.
+  |Xcommand            Pipe file between current pos & mark X to shell command.
+  s file               Save input to a file.
+  v                    Edit the current file with $VISUAL or $EDITOR.
+  V                    Print version number of "less".
+ ---------------------------------------------------------------------------
+
+                           OPTIONS
+
+        Most options may be changed either on the command line,
+        or from within less by using the - or -- command.
+        Options may be given in one of two forms: either a single
+        character preceded by a -, or a name preceded by --.
+
+  -?  ........  --help
+                  Display help (from command line).
+  -a  ........  --search-skip-screen
+                  Search skips current screen.
+  -A  ........  --SEARCH-SKIP-SCREEN
+                  Search starts just after target line.
+  -b [N]  ....  --buffers=[N]
+                  Number of buffers.
+  -B  ........  --auto-buffers
+                  Don't automatically allocate buffers for pipes.
+  -c  ........  --clear-screen
+                  Repaint by clearing rather than scrolling.
+  -d  ........  --dumb
+                  Dumb terminal.
+  -D xcolor  .  --color=xcolor
+                  Set screen colors.
+  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
+                  Quit at end of file.
+  -f  ........  --force
+                  Force open non-regular files.
+  -F  ........  --quit-if-one-screen
+                  Quit if entire file fits on first screen.
+  -g  ........  --hilite-search
+                  Highlight only last match for searches.
+  -G  ........  --HILITE-SEARCH
+                  Don't highlight any matches for searches.
+  -h [N]  ....  --max-back-scroll=[N]
+                  Backward scroll limit.
+  -i  ........  --ignore-case
+                  Ignore case in searches that do not contain uppercase.
+  -I  ........  --IGNORE-CASE
+                  Ignore case in all searches.
+  -j [N]  ....  --jump-target=[N]
+                  Screen position of target lines.
+
+
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+...skipping...
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+...skipping...
+ ctrl-L ................................... Complete filename, list all.
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+~
+/bin/bash: -c: 行 1: 寻找匹配的 `"' 时遇到了未预期的 EOF
+
+
+                   SUMMARY OF LESS COMMANDS
+
+      Commands marked with * may be preceded by a number, N.
+      Notes in parentheses indicate the behavior if N is given.
+      A key preceded by a caret indicates the Ctrl key; thus ^K is ctrl-K.
+
+  h  H                 Display this help.
+  q  :q  Q  :Q  ZZ     Exit.
+ ---------------------------------------------------------------------------
+
+                           MOVING
+
+  e  ^E  j  ^N  CR  *  Forward  one line   (or N lines).
+  y  ^Y  k  ^K  ^P  *  Backward one line   (or N lines).
+  f  ^F  ^V  SPACE  *  Forward  one window (or N lines).
+  b  ^B  ESC-v      *  Backward one window (or N lines).
+  z                 *  Forward  one window (and set window to N).
+  w                 *  Backward one window (and set window to N).
+  ESC-SPACE         *  Forward  one window, but don't stop at end-of-file.
+  d  ^D             *  Forward  one half-window (and set half-window to N).
+  u  ^U             *  Backward one half-window (and set half-window to N).
+  ESC-)  RightArrow *  Right one half screen width (or N positions).
+  ESC-(  LeftArrow  *  Left  one half screen width (or N positions).
+  ESC-}  ^RightArrow   Right to last column displayed.
+  ESC-{  ^LeftArrow    Left  to first column.
+  F                    Forward forever; like "tail -f".
+  ESC-F                Like F but stop when search pattern is found.
+  r  ^R  ^L            Repaint screen.
+  R                    Repaint screen, discarding buffered input.
+        ---------------------------------------------------
+        Default "window" is the screen height.
+        Default "half-window" is half of the screen height.
+ ---------------------------------------------------------------------------
+
+                          SEARCHING
+
+  /pattern          *  Search forward for (N-th) matching line.
+  ?pattern          *  Search backward for (N-th) matching line.
+  n                 *  Repeat previous search (for N-th occurrence).
+  N                 *  Repeat previous search in reverse direction.
+  ESC-n             *  Repeat previous search, spanning files.
+  ESC-N             *  Repeat previous search, reverse dir. & spanning files.
+  ^O^N  ^On         *  Search forward for (N-th) OSC8 hyperlink.
+  ^O^P  ^Op         *  Search backward for (N-th) OSC8 hyperlink.
+  ^O^L  ^Ol            Jump to the currently selected OSC8 hyperlink.
+  ESC-u                Undo (toggle) search highlighting.
+  ESC-U                Clear search highlighting.
+  &pattern          *  Display only matching lines.
+        ---------------------------------------------------
+        A search pattern may begin with one or more of:
+        ^N or !  Search for NON-matching lines.
+        ^E or *  Search multiple files (pass thru END OF FILE).
+        ^F or @  Start search at FIRST file (for /) or last file (for ?).
+        ^K       Highlight matches, but don't move (KEEP position).
+        ^R       Don't use REGULAR EXPRESSIONS.
+        ^S n     Search for match in n-th parenthesized subpattern.
+        ^W       WRAP search if no match found.
+        ^L       Enter next character literally into pattern.
+ ---------------------------------------------------------------------------
+
+                           JUMPING
+
+  g  <  ESC-<       *  Go to first line in file (or line N).
+  G  >  ESC->       *  Go to last line in file (or line N).
+  p  %              *  Go to beginning of file (or N percent into file).
+  t                 *  Go to the (N-th) next tag.
+  T                 *  Go to the (N-th) previous tag.
+  {  (  [           *  Find close bracket } ) ].
+  }  )  ]           *  Find open bracket { ( [.
+  ESC-^F <c1> <c2>  *  Find close bracket <c2>.
+  ESC-^B <c1> <c2>  *  Find open bracket <c1>.
+        ---------------------------------------------------
+        Each "find close bracket" command goes forward to the close bracket 
+          matching the (N-th) open bracket in the top line.
+        Each "find open bracket" command goes backward to the open bracket 
+          matching the (N-th) close bracket in the bottom line.
+
+  m<letter>            Mark the current top line with <letter>.
+  M<letter>            Mark the current bottom line with <letter>.
+  '<letter>            Go to a previously marked position.
+  ''                   Go to the previous position.
+  ^X^X                 Same as '.
+  ESC-m<letter>        Clear a mark.
+        ---------------------------------------------------
+        A mark is any upper-case or lower-case letter.
+        Certain marks are predefined:
+             ^  means  beginning of the file
+             $  means  end of the file
+ ---------------------------------------------------------------------------
+
+                        CHANGING FILES
+
+  :e [file]            Examine a new file.
+  ^X^V                 Same as :e.
+  :n                *  Examine the (N-th) next file from the command line.
+  :p                *  Examine the (N-th) previous file from the command line.
+  :x                *  Examine the first (or N-th) file from the command line.
+  ^O^O                 Open the currently selected OSC8 hyperlink.
+  :d                   Delete the current file from the command line list.
+  =  ^G  :f            Print current file name.
+ ---------------------------------------------------------------------------
+
+                    MISCELLANEOUS COMMANDS
+
+  -<flag>              Toggle a command line option [see OPTIONS below].
+  --<name>             Toggle a command line option, by name.
+  _<flag>              Display the setting of a command line option.
+  __<name>             Display the setting of an option, by name.
+  +cmd                 Execute the less cmd each time a new file is examined.
+
+  !command             Execute the shell command with $SHELL.
+  #command             Execute the shell command, expanded like a prompt.
+  |Xcommand            Pipe file between current pos & mark X to shell command.
+  s file               Save input to a file.
+  v                    Edit the current file with $VISUAL or $EDITOR.
+  V                    Print version number of "less".
+ ---------------------------------------------------------------------------
+
+                           OPTIONS
+
+        Most options may be changed either on the command line,
+        or from within less by using the - or -- command.
+        Options may be given in one of two forms: either a single
+        character preceded by a -, or a name preceded by --.
+
+  -?  ........  --help
+                  Display help (from command line).
+  -a  ........  --search-skip-screen
+                  Search skips current screen.
+  -A  ........  --SEARCH-SKIP-SCREEN
+                  Search starts just after target line.
+  -b [N]  ....  --buffers=[N]
+                  Number of buffers.
+  -B  ........  --auto-buffers
+                  Don't automatically allocate buffers for pipes.
+  -c  ........  --clear-screen
+                  Repaint by clearing rather than scrolling.
+  -d  ........  --dumb
+                  Dumb terminal.
+  -D xcolor  .  --color=xcolor
+                  Set screen colors.
+  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
+                  Quit at end of file.
+  -f  ........  --force
+                  Force open non-regular files.
+  -F  ........  --quit-if-one-screen
+                  Quit if entire file fits on first screen.
+  -g  ........  --hilite-search
+                  Highlight only last match for searches.
+  -G  ........  --HILITE-SEARCH
+                  Don't highlight any matches for searches.
+  -h [N]  ....  --max-back-scroll=[N]
+                  Backward scroll limit.
+  -i  ........  --ignore-case
+                  Ignore case in searches that do not contain uppercase.
+  -I  ........  --IGNORE-CASE
+                  Ignore case in all searches.
+  -j [N]  ....  --jump-target=[N]
+                  Screen position of target lines.
+  -J  ........  --status-column
+                  Display a status column at left edge of screen.
+  -k file  ...  --lesskey-file=file
+                  Use a compiled lesskey file.
+  -K  ........  --quit-on-intr
+                  Exit less in response to ctrl-C.
+  -L  ........  --no-lessopen
+                  Ignore the LESSOPEN environment variable.
+  -m  -M  ....  --long-prompt  --LONG-PROMPT
+                  Set prompt style.
+  -n .........  --line-numbers
+                  Suppress line numbers in prompts and messages.
+  -N .........  --LINE-NUMBERS
+                  Display line number at start of each line.
+  -o [file] ..  --log-file=[file]
+                  Copy to log file (standard input only).
+
+                  Repaint by clearing rather than scrolling.
+  -d  ........  --dumb
+                  Dumb terminal.
+  -D xcolor  .  --color=xcolor
+                  Set screen colors.
+  -e  -E  ....  --quit-at-eof  --QUIT-AT-EOF
+                  Quit at end of file.
+  -f  ........  --force
+                  Force open non-regular files.
+  -F  ........  --quit-if-one-screen
+                  Quit if entire file fits on first screen.
+  -g  ........  --hilite-search
+                  Highlight only last match for searches.
+  -G  ........  --HILITE-SEARCH
+                  Don't highlight any matches for searches.
+  -h [N]  ....  --max-back-scroll=[N]
+                  Backward scroll limit.
+  -i  ........  --ignore-case
+                  Ignore case in searches that do not contain uppercase.
+  -I  ........  --IGNORE-CASE
+                  Ignore case in all searches.
+  -j [N]  ....  --jump-target=[N]
+                  Screen position of target lines.
+  -J  ........  --status-column
+                  Display a status column at left edge of screen.
+  -k file  ...  --lesskey-file=file
+                  Use a compiled lesskey file.
+  -K  ........  --quit-on-intr
+                  Exit less in response to ctrl-C.
+  -L  ........  --no-lessopen
+                  Ignore the LESSOPEN environment variable.
+  -m  -M  ....  --long-prompt  --LONG-PROMPT
+                  Set prompt style.
+  -n .........  --line-numbers
+                  Suppress line numbers in prompts and messages.
+  -N .........  --LINE-NUMBERS
+                  Display line number at start of each line.
+  -o [file] ..  --log-file=[file]
+                  Copy to log file (standard input only).
+  -O [file] ..  --LOG-FILE=[file]
+                  Copy to log file (unconditionally overwrite).
+  -p pattern .  --pattern=[pattern]
+                  Start at pattern (from command line).
+  -P [prompt]   --prompt=[prompt]
+                  Define new prompt.
+  -q  -Q  ....  --quiet  --QUIET  --silent --SILENT
+                  Quiet the terminal bell.
+  -r  -R  ....  --raw-control-chars  --RAW-CONTROL-CHARS
+                  Output "raw" control characters.
+  -s  ........  --squeeze-blank-lines
+                  Squeeze multiple blank lines.
+  -S  ........  --chop-long-lines
+                  Chop (truncate) long lines rather than wrapping.
+  -t tag  ....  --tag=[tag]
+                  Find a tag.
+  -T [tagsfile] --tag-file=[tagsfile]
+                  Use an alternate tags file.
+  -u  -U  ....  --underline-special  --UNDERLINE-SPECIAL
+                  Change handling of backspaces, tabs and carriage returns.
+  -V  ........  --version
+                  Display the version number of "less".
+  -w  ........  --hilite-unread
+                  Highlight first new line after forward-screen.
+  -W  ........  --HILITE-UNREAD
+                  Highlight first new line after any forward movement.
+  -x [N[,...]]  --tabs=[N[,...]]
+                  Set tab stops.
+  -X  ........  --no-init
+                  Don't use termcap init/deinit strings.
+  -y [N]  ....  --max-forw-scroll=[N]
+                  Forward scroll limit.
+  -z [N]  ....  --window=[N]
+                  Set size of window.
+  -" [c[c]]  .  --quotes=[c[c]]
+                  Set shell quote characters.
+  -~  ........  --tilde
+                  Don't display tildes after end of file.
+  -# [N]  ....  --shift=[N]
+                  Set horizontal scroll amount (0 = one half screen width).
+
+                --exit-follow-on-close
+                  Exit F command on a pipe when writer closes pipe.
+                --file-size
+                  Automatically determine the size of the input file.
+                --follow-name
+                  The F command changes files if the input file is renamed.
+                --header=[L[,C[,N]]]
+                  Use L lines (starting at line N) and C columns as headers.
+                --incsearch
+                  Search file as each pattern character is typed in.
+                --intr=[C]
+                  Use C instead of ^X to interrupt a read.
+                --lesskey-context=text
+                  Use lesskey source file contents.
+                --lesskey-src=file
+                  Use a lesskey source file.
+                --line-num-width=[N]
+                  Set the width of the -N line number field to N characters.
+                --match-shift=[N]
+                  Show at least N characters to the left of a search match.
+                --modelines=[N]
+                  Read N lines from the input file and look for vim modelines.
+                --mouse
+                  Enable mouse input.
+                --no-keypad
+                  Don't send termcap keypad init/deinit strings.
+                --no-histdups
+                  Remove duplicates from command history.
+                --no-number-headers
+                  Don't give line numbers to header lines.
+                --no-search-header-lines
+                  Searches do not include header lines.
+                --no-search-header-columns
+                  Searches do not include header columns.
+                --no-search-headers
+                  Searches do not include header lines or columns.
+                --no-vbell
+                  Disable the terminal's visual bell.
+                --redraw-on-quit
+                  Redraw final screen when quitting.
+                --rscroll=[C]
+                  Set the character used to mark truncated lines.
+                --save-marks
+                  Retain marks across invocations of less.
+                --search-options=[EFKNRW-]
+                  Set default options for every search.
+                --show-preproc-errors
+                  Display a message if preprocessor exits with an error status.
+                --proc-backspace
+                  Process backspaces for bold/underline.
+                --PROC-BACKSPACE
+                  Treat backspaces as control characters.
+                --proc-return
+                  Delete carriage returns before newline.
+                --PROC-RETURN
+                  Treat carriage returns as control characters.
+                --proc-tab
+                  Expand tabs to spaces.
+                --PROC-TAB
+                  Treat tabs as control characters.
+                --status-col-width=[N]
+                  Set the width of the -J status column to N characters.
+                --status-line
+                  Highlight or color the entire line containing a mark.
+                --use-backslash
+                  Subsequent options use backslash as escape char.
+                --use-color
+                  Enables colored text.
+                --wheel-lines=[N]
+                  Each click of the mouse wheel moves N lines.
+                --wordwrap
+                  Wrap lines at spaces.
+
+
+ ---------------------------------------------------------------------------
+
+                          LINE EDITING
+
+        These keys can be used to edit text being entered 
+        on the "command line" at the bottom of the screen.
+
+ RightArrow ..................... ESC-l ... Move cursor right one character.
+ LeftArrow ...................... ESC-h ... Move cursor left one character.
+ ctrl-RightArrow  ESC-RightArrow  ESC-w ... Move cursor right one word.
+ ctrl-LeftArrow   ESC-LeftArrow   ESC-b ... Move cursor left one word.
+ HOME ........................... ESC-0 ... Move cursor to start of line.
+ END ............................ ESC-$ ... Move cursor to end of line.
+ BACKSPACE ................................ Delete char to left of cursor.
+ DELETE ......................... ESC-x ... Delete char under cursor.
+ ctrl-BACKSPACE   ESC-BACKSPACE ........... Delete word to left of cursor.
+ ctrl-DELETE .... ESC-DELETE .... ESC-X ... Delete word under cursor.
+ ctrl-U ......... ESC (MS-DOS only) ....... Delete entire line.
+ UpArrow ........................ ESC-k ... Retrieve previous command line.
+ DownArrow ...................... ESC-j ... Retrieve next command line.
+ TAB ...................................... Complete filename & cycle.
+ SHIFT-TAB ...................... ESC-TAB   Complete filename & reverse cycle.
+ ctrl-L ................................... Complete filename, list all.
