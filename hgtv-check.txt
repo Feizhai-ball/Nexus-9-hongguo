@@ -1,0 +1,157 @@
+========== OPEN DETAIL SIGNATURE ==========
+                            showCatalog()
+                        }
+                }
+            },
+        )
+    }
+
+    // 作品详情入口：衔接来源页面、详情数据与后续观看操作。
+    private fun openDetail(
+        series: Series,
+        resume: Boolean = false,
+        autoplay: Boolean = true,
+        cloudProgress: CloudProgress? = null,
+        fromRelated: Boolean = false,
+        fromHome: Boolean = false,
+    ) {
+        if (!fromRelated) detailTrail.clear()
+        relatedSection = null
+        val accountScope = cloudAccount.historyScope
+        detailCloudScope = accountScope
+        detailCloudProgress =
+            cloudProgress ?: if (!resume || fromHome) cloudAccount.progress(series.id) else null
+        pendingDetail = series
+        detailAutoplay = autoplay
+        invalidatePage()
+        releaseCatalogViews()
+        screen = "detail"
+        homePlayback = fromHome
+        directPlayback = resume && !fromHome
+        detail = null
+        synopsisExpanded = false
+        val body = base(series.title)
+        message(body, "正在加载剧集…")
+        work(
+            { repository.detail(series.id) },
+            { result ->
+                detail = result
+                library.observeFavorite(
+                    series.id,
+                    result.episodes.size,
+                    System.currentTimeMillis(),
+                    acknowledge = true,
+                )
+                if (
+                    cloudProgress != null &&
+                        (accountScope != cloudAccount.historyScope || !cloudAccount.signedIn)
+                ) {
+                    showCatalog()
+                    return@work
+                }
+                val progress = detailProgress(result, preferCloud = cloudProgress != null)
+                val target =
+                    ResumePlayback.target(
+                        result.episodes,
+                        progress?.episodeId,
+                        progress?.position ?: 0,
+                        progress?.completed == true,
+                    )
+                episodeIndex = target.index
+                group = episodeIndex / 20
+                if (resume) playEpisode(target.index, target.position, autoplay = detailAutoplay)
+                else showDetail(false)
+            },
+            { problem ->
+                error(body, problem) {
+                    if (cloudProgress != null && accountScope != cloudAccount.historyScope)
+                        showCatalog()
+                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome)
+                }
+            },
+        )
+    }
+
+    private fun detailProgress(data: Detail, preferCloud: Boolean = false): WatchProgress? =
+        ResumePlayback.progress(
+            data,
+            library.progress(data.series.id),
+            detailCloudProgress?.takeIf {
+
+========== CLOUD TEST REFLECTION ==========
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    private fun open(activity: MainActivity, resume: Boolean, remote: CloudProgress? = null, fromHome: Boolean = false) {
+        MainActivity::class
+            .java
+            .getDeclaredMethod(
+                "openDetail",
+                Series::class.java,
+                Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+                CloudProgress::class.java,
+                Boolean::class.javaPrimitiveType,
+                Boolean::class.javaPrimitiveType,
+            )
+            .apply { isAccessible = true }
+            .invoke(activity, series, resume, true, remote, false, fromHome)
+        (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+        ShadowLooper.idleMainLooper()
+    }
+
+    private fun assertPlayback(activity: MainActivity, index: Int, position: Long) {
+        assertEquals("player", get(activity, "screen"))
+        assertEquals(index, get(activity, "episodeIndex"))
+        assertEquals(position, get(activity, "startPosition"))
+    }
+
+    @Test
+    fun homeStartsPlaybackAndBackOpensEpisodesEvenWithControlsVisible() =
+
+========== MAIN ACTIVITY JSON IMPORT / USE ==========
+32:import org.json.JSONObject
+3695:        health.optJSONObject("session")?.takeIf { it.optString("state") == "RUNNING" }
+3852:                                            ?.optJSONObject("session")
+
+========== ALL OPEN DETAIL CALLS ==========
+507:                openDetail(remote.series, true, cloudProgress = remote)
+992:                    { openDetail(it, resume = true, fromHome = true) },
+1035:                    { item -> openDetail(item, false) },
+1061:            { openDetail(it, false) }, ::quickActions,
+1511:                    openDetail(
+1740:                    openDetail(item, false)
+1834:                            if (!chosen.upcoming) openDetail(chosen.series, false)
+1916:                { item, resume -> openDetail(item, resume) },
+1923:                openDetail(entry.series, resume)
+2066:                    openDetail(
+2073:        actions += "查看剧集详情" to { openDetail(series) }
+2409:                    0 -> openDetail(series, true)
+2426:    private fun openDetail(
+2485:                    else openDetail(series, resume, detailAutoplay, cloudProgress, fromRelated, fromHome)
+2561:                        openDetail(target, fromRelated = true)
+2827:                        openDetail(related.series, fromRelated = true)
+4953:                                    openDetail(
+
+========== DIFF CHECK ==========
+
+========== GIT STATUS ==========
+## recovery/hgtv-custom-0166
+ M app/src/main/kotlin/com/hongguotv/nativeapp/AccountController.kt
+ M app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
+ M app/src/main/kotlin/com/hongguotv/nativeapp/EpisodePanel.kt
+ M app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
+ D app/src/main/kotlin/com/hongguotv/nativeapp/PhoneConsole.kt
+ D app/src/main/kotlin/com/hongguotv/nativeapp/PhoneControlCatalog.kt
+ D app/src/main/kotlin/com/hongguotv/nativeapp/PhoneCoverLoader.kt
+ M app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
+ M app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt
+ D app/src/test/kotlin/com/hongguotv/nativeapp/PhoneConsoleTest.kt
+ D app/src/test/kotlin/com/hongguotv/nativeapp/PhoneControlCatalogTest.kt
+ D core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt
+ D core/src/main/kotlin/com/hongguotv/core/PhoneControlServer.kt
+ D core/src/test/kotlin/com/hongguotv/core/PhoneControlServerTest.kt
+?? "../tatus --short --branch"
+?? ../ubprocess
