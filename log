@@ -1,1552 +1,1232 @@
-k@k-PC:~/hongguoTV-v0166-recovery/kotlin-tv/app/build/platform/outputs/apk/debug$ cd "$HOME/hongguoTV-v0166-recovery/kotlin-tv"
-echo "========== TOUCH LISTENERS =========="
-rg -n -C 4 'setOnTouchListener|onTouchEvent|dispatchTouchEvent|performClick|ACTION_DOWN|ACTION_UP' app/src/main/kotlin/com/hongguotv/nativeapp
-echo "========== BUTTON CLICK AND FOCUS =========="
-rg -n -C 3 'setOnClickListener|isFocusable|isClickable|requestFocus|OnFocusChangeListener|focusableInTouchMode' app/src/main/kotlin/com/hongguotv/nativeapp
-========== TOUCH LISTENERS ==========
-app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
-357-                .create()
-358-        next.setOnKeyListener { _, key, event ->
-359-            when {
-360-                key in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> {
-361:                    if (event.action == KeyEvent.ACTION_DOWN)
-362-                        digit((key - KeyEvent.KEYCODE_0).toString())
-363-                    true
-364-                }
-365-                key == KeyEvent.KEYCODE_DEL -> {
-366:                    if (event.action == KeyEvent.ACTION_DOWN) erase()
-367-                    true
-368-                }
-369-                else -> false
-370-            }
-
-app/src/main/kotlin/com/hongguotv/nativeapp/HomeScreen.kt
-369-                            true
-370-                        }
-371-                        view.setOnKeyListener { _, code, event ->
-372-                            if (code == KeyEvent.KEYCODE_MENU) {
-373:                                if (event.action == KeyEvent.ACTION_UP) {
-374-                                    lastFocus = key
-375-                                    remember(key)
-376-                                    card.entry?.let { actions(it.series, view) }
-377-                                }
-
-app/src/main/kotlin/com/hongguotv/nativeapp/ContinuousCatalogView.kt
-151-            onGridFocus?.invoke(focus)
-152-        }
-153-        grid.setOnKeyListener { _, key, event ->
-154-            if (key == KeyEvent.KEYCODE_MENU) {
-155:                if (event.action == KeyEvent.ACTION_UP)
-156-                    entries.getOrNull(grid.selectedItemPosition)?.let { item ->
-157-                        grid.selectedView?.let { more(item, it) }
-158-                    }
-159-                true
-160:            } else if (event.action == KeyEvent.ACTION_DOWN) {
-161-                navigating = key in listOf(KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT)
-162-                when {
-163-                    key == KeyEvent.KEYCODE_DPAD_LEFT &&
-164-                        grid.selectedItemPosition % columns == 0 &&
-
-app/src/main/kotlin/com/hongguotv/nativeapp/HomeFeedScreen.kt
-324-        hero.setOnClickListener { toggle() }
-325-        stage.setOnKeyListener { _, key, event ->
-326-            when (key) {
-327-                KeyEvent.KEYCODE_DPAD_UP -> {
-328:                    if (event.action == KeyEvent.ACTION_DOWN) recommendButton.requestFocus()
-329-                    true
-330-                }
-331-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-332:                    if (event.action == KeyEvent.ACTION_DOWN) showActions()
-333-                    true
-334-                }
-335-                KeyEvent.KEYCODE_DPAD_LEFT,
-336-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-337:                    if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-338-                        move(if (key == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
-339-                    true
-340-                }
-341-                KeyEvent.KEYCODE_DPAD_CENTER,
-342-                KeyEvent.KEYCODE_ENTER -> {
-343:                    if (event.action == KeyEvent.ACTION_UP) toggle()
-344-                    true
-345-                }
-346-                else -> false
-347-            }
-
-app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
-122-        val focused = findFocus()
-123-        val index = buttons.indexOf(focused)
-124-        if (index >= 0 && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-125-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)) {
-126:            if (event.action == KeyEvent.ACTION_DOWN) when (event.keyCode) {
-127-                KeyEvent.KEYCODE_DPAD_UP -> buttons[(index - 1).coerceAtLeast(0)].requestFocus()
-128-                KeyEvent.KEYCODE_DPAD_DOWN -> buttons[(index + 1).coerceAtMost(buttons.lastIndex)].requestFocus()
-129-                KeyEvent.KEYCODE_DPAD_RIGHT -> restoreContent()
-130-            }
---
-132-        }
-133-        // Resolve vertical movement inside the content first, independent of the rail's
-134-        // geometry and stale nextFocus IDs. At the top, provide a direct route home.
-135-        val vertical = event.keyCode == KeyEvent.KEYCODE_DPAD_UP || event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN
-136:        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) &&
-137-            focused !is android.widget.AbsListView) {
-138-            val direction = if (event.keyCode == KeyEvent.KEYCODE_DPAD_UP) FOCUS_UP else FOCUS_DOWN
-139-            val next = focused?.focusSearch(direction)
-140-            if (next == null || next === focused || !inContent(next)) {
---
-145-                else if (direction == FOCUS_UP) navigation[selectedDestination].requestFocus()
-146-                return true
-147-            }
-148-        }
-149:        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT &&
-150-            inContent(focused) && focused !is android.widget.AbsListView && focused !is HandlesHorizontalKeys) {
-151-            val next = focused?.focusSearch(FOCUS_LEFT)
-152-            if (next == null || !inContent(next) || next === focused) {
-153-                navigation[selectedDestination].requestFocus()
-154-                return true
-155-            }
-156-        }
-157-        val handled = super.dispatchKeyEvent(event)
-158:        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) && !inContent(findFocus())) {
-159-            focused?.requestFocus()
-160-            return true
-161-        }
-162-        return handled
-
-app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
-1511-                    true
-1512-                }
-1513-                card.setOnKeyListener { _, key, event ->
-1514-                    if (key == KeyEvent.KEYCODE_MENU) {
-1515:                        if (event.action == KeyEvent.ACTION_UP) {
-1516-                            catalogFocus = item.id
-1517-                            quickActions(item, card)
-1518-                        }
-1519-                        true
---
-4402-                dp(56).toFloat(),
-4403-                ViewConfiguration.get(this).scaledTouchSlop.toFloat(),
-4404-            )
-4405-        val surface = view.videoSurfaceView ?: view
-4406:        surface.setOnTouchListener { _, event ->
-4407-            when (event.actionMasked) {
-4408:                MotionEvent.ACTION_DOWN -> {
-4409-                    tracker.down(event.x, event.y)
-4410-                    true
-4411-                }
-4412-                MotionEvent.ACTION_MOVE -> true
-4413:                MotionEvent.ACTION_UP -> {
-4414-                    when (
-4415-                        tracker.up(
-4416-                            event.x,
-4417-                            event.y,
---
-4421-                        )
-4422-                    ) {
-4423-                        EpisodeSwipeTracker.Result.NEXT -> skipEpisode(1)
-4424-                        EpisodeSwipeTracker.Result.PREVIOUS -> skipEpisode(-1)
-4425:                        EpisodeSwipeTracker.Result.TAP -> view.performClick()
-4426-                        EpisodeSwipeTracker.Result.NONE -> Unit
-4427-                    }
-4428-                    true
-4429-                }
---
-4896-        gradualPreloader?.yieldToUser()
-4897-    }
-4898-
-4899-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-4900:        if (event.action == KeyEvent.ACTION_DOWN) gradualPreloader?.yieldToUser()
-4901-        if (screen == "catalog" && event.keyCode == KeyEvent.KEYCODE_BACK) {
-4902:            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) goBack()
-4903-            return true
-4904-        }
-4905-        if (screen == "player") {
-4906:            if (panel && !playError && event.action == KeyEvent.ACTION_DOWN) showHud()
-4907-            val key = event.keyCode
-4908-            if (key == KeyEvent.KEYCODE_BACK) {
-4909:                if (event.action == KeyEvent.ACTION_UP) goBack()
-4910-                return true
-4911-            }
-4912-            if (
-4913-                key in
---
-4921-                        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
-4922-                        KeyEvent.KEYCODE_MEDIA_REWIND,
-4923-                    )
-4924-            ) {
-4925:                if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0)
-4926-                    when (key) {
-4927-                        KeyEvent.KEYCODE_MEDIA_PLAY -> requestPlayback(true)
-4928-                        KeyEvent.KEYCODE_MEDIA_PAUSE -> requestPlayback(false)
-4929-                        KeyEvent.KEYCODE_MEDIA_NEXT -> skipEpisode(1)
---
-4947-                            KeyEvent.KEYCODE_DPAD_DOWN,
-4948-                            KeyEvent.KEYCODE_MENU,
-4949-                        )
-4950-                ) {
-4951:                    if (event.action == KeyEvent.ACTION_DOWN)
-4952-                        when (key) {
-4953-                            KeyEvent.KEYCODE_DPAD_LEFT -> seek(-1, event.repeatCount)
-4954-                            KeyEvent.KEYCODE_DPAD_RIGHT -> seek(1, event.repeatCount)
-4955-                            KeyEvent.KEYCODE_DPAD_CENTER,
-========== BUTTON CLICK AND FOCUS ==========
-app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
-60-                phone?.close()
-61-                phone = null
-62-                dialog = null
-63:                if (anchor?.isAttachedToWindow == true) anchor.requestFocus()
-64-            }
-65-        }
-66-        next.show()
---
-112-                .setPositiveButton("确认") { _, _ -> action() }
-113-                .create()
-114-        open(next, anchor)
-115:        next.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
-116-    }
-117-
-118-    fun choose(
---
-152-                id = View.generateViewId()
-153-                tag = "choice-${choices.size}"
-154-                gravity = Gravity.CENTER_VERTICAL
-155:                isFocusable = true
-156:                isFocusableInTouchMode = true
-157:                isClickable = true
-158-                minimumHeight = dp(48)
-159-                setPadding(dp(14), dp(10), dp(14), dp(10))
-160-                contentDescription = value + if (checked) "，当前已选" else ""
---
-181-                marker.setTextColor(TvVisual.accent)
-182-            }
-183-            paint(false)
-184:            row.setOnFocusChangeListener { _, focused -> paint(focused) }
-185:            row.setOnClickListener { next.dismiss(); action() }
-186-            list.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
-187-            choices += row
-188-        }
---
-210-        scroll.layoutParams = LinearLayout.LayoutParams(-1, 0, 1f)
-211-        next.window?.setLayout(width, height)
-212-        val target = choices[selected.takeIf { it in labels.indices } ?: 0]
-213:        target.requestFocus()
-214-        target.post { if (next.isShowing) scroll.requestChildFocus(list, target) }
-215-    }
-216-
---
-238-                        text = value
-239-                        textSize = 15f
-240-                        gravity = android.view.Gravity.CENTER
-241:                        isFocusable = true
-242:                        isClickable = true
-243-                        maxLines = 1
-244-                        ellipsize = android.text.TextUtils.TruncateAt.END
-245-                        setPadding(dp(10), dp(10), dp(10), dp(10))
---
-249-                            background = TvStyle.card(activity, focused, index == selected)
-250-                        }
-251-                        paint(false)
-252:                        setOnFocusChangeListener { _, focused -> paint(focused) }
-253:                        setOnClickListener {
-254-                            next.dismiss()
-255-                            onChoice(index)
-256-                        }
---
-288-            (activity.resources.displayMetrics.widthPixels * .85f).toInt(),
-289-            android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
-290-        )
-291:        choices.getOrNull(selected.coerceAtLeast(0))?.requestFocus()
-292-    }
-293-
-294-    fun episodePicker(count: Int, current: Int, anchor: View?, select: (Int) -> Unit) {
---
-331-                                    arrayOf(intArrayOf(android.R.attr.state_focused), intArrayOf()),
-332-                                    intArrayOf(TvStyle.raised, TvStyle.surface),
-333-                                )
-334:                            setOnClickListener {
-335-                                when (key) {
-336-                                    "清空" -> {
-337-                                        digits = ""
---
-380-        }
-381-        locate.nextFocusUpId = buttons[10].id
-382-        cancel.nextFocusUpId = buttons[9].id
-383:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-384-            val target = EpisodeTarget.parse(digits, count)
-385-            if (target == null) error.text = "请输入 1—$count 之间的集数"
-386-            else {
---
-388-                select(target)
-389-            }
-390-        }
-391:        buttons.first().requestFocus()
-392-    }
-393-
-394-    private fun qr(url: String) =
---
-455-        if (addresses.size > 1) builder.setNeutralButton("切换地址", null)
-456-        val next = builder.create()
-457-        open(next, anchor)
-458:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-459-            val message =
-460-                "请依次检查：\n1. 用手机浏览器打开二维码地址；扫码软件内打不开时，选择在浏览器打开。\n2. 手机不要只用移动数据；手机和电视需处于可互通的局域网。\n3. 访客 Wi-Fi、路由器设备隔离、VPN 可能阻断连接。\n4. 多个网络可尝试切换地址；电脑模拟器的内部地址通常无法被手机访问。\n\n返回时会重新生成二维码，旧地址随窗口关闭失效。"
-461-            val help =
---
-474-            open(help, anchor)
-475-        }
-476-        if (addresses.size > 1)
-477:            next.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-478-                choose(
-479-                    "选择电视网络地址",
-480-                    addresses.map { "${it.label} · ${it.address}" },
---
-588-                                        }
-589-                                        .create()
-590-                                open(confirm, anchor)
-591:                                confirm.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
-592-                            }
-593-                        },
-594-                        {
-
-app/src/main/kotlin/com/hongguotv/nativeapp/RankingScreen.kt
-50-    private fun button(value: String, action: () -> Unit) =
-51-        label(value, 14f).apply {
-52-            id = View.generateViewId()
-53:            isFocusable = true
-54:            isClickable = true
-55-            gravity = Gravity.CENTER
-56-            setPadding(dp(14), dp(7), dp(14), dp(7))
-57-            minHeight = dp(36)
---
-59-                setTextColor(if (isSelected) TvStyle.accent else TvStyle.text)
-60-                background = TvStyle.card(activity, hasFocus(), isSelected)
-61-            }
-62:            setOnFocusChangeListener { _, _ -> paint() }
-63:            setOnClickListener { action() }
-64-            paint()
-65-        }
-66-
---
-187-    }
-188-
-189-    fun start(force: Boolean, focusNav: Boolean) {
-190:        if (focusNav) nav[2].requestFocus() else controls[state.board.ordinal].requestFocus()
-191-        // 进入页面时 TTL 内的缓存直接展示；是否续期由状态机判断，不做模态等待。
-192-        maybeRefresh(state.board, force = force && !state.isFresh(state.board))
-193-        if (!state.isRefreshing(state.board) && !focusNav && state.selectedId.isNotEmpty()) {
-
-app/src/main/kotlin/com/hongguotv/nativeapp/TvSearchPanel.kt
-58-        showingResults = true
-59-        editor.visibility = GONE
-60-        resultStage.visibility = VISIBLE
-61:        backButton.requestFocus()
-62-    }
-63-    fun back(): Boolean {
-64-        if (!showingResults) return false
-65-        showingResults = false
-66-        resultStage.visibility = GONE
-67-        editor.visibility = VISIBLE
-68:        if (editingFocus?.requestFocus() != true) entry().requestFocus()
-69-        updateNavigation()
-70-        return true
-71-    }
---
-96-            text = value
-97-            textSize = 18f
-98-            gravity = Gravity.CENTER
-99:            isFocusable = true
-100:            isClickable = true
-101-            minHeight = dp(36)
-102-            setTextColor(TvStyle.text)
-103-            setPadding(dp(4), dp(6), dp(4), dp(6))
-104-            background = TvStyle.card(context, false)
-105:            setOnFocusChangeListener { _, focused ->
-106-                background = TvStyle.shape(context, if (focused) TvStyle.text else TvStyle.surface, radius = 5)
-107-                setTextColor(if (focused) TvStyle.background else TvStyle.text)
-108-            }
-109:            setOnClickListener(click)
-110-        }
-111-
-112-    private fun hideKeyboard() {
---
-179-                val key = action(char.toString()) { insert(char.lowercaseChar().toString()) }
-180-                val keyIndex = keys.size
-181-                val styleFocus = key.onFocusChangeListener
-182:                key.setOnFocusChangeListener { view, focused ->
-183-                    styleFocus?.onFocusChange(view, focused)
-184-                    if (focused) { lastKey = keyIndex; suggestionsNavigation() }
-185-                }
---
-203-                searchButton,
-204-                action("打开输入法") {
-205-                    input.showSoftInputOnFocus = true
-206:                    input.requestFocus()
-207-                    (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
-208-                        .showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
-209-                },
-
-app/src/main/kotlin/com/hongguotv/nativeapp/EpisodePanel.kt
-42-            id = View.generateViewId()
-43-            gravity = Gravity.CENTER
-44-            minHeight = dp(46)
-45:            isFocusable = true
-46:            isFocusableInTouchMode = true
-47-            fun paint(focus: Boolean) {
-48-                background = TvStyle.card(activity, focus, active)
-49-            }
-50-            paint(false)
-51:            setOnFocusChangeListener { _, hasFocus -> paint(hasFocus) }
-52:            setOnClickListener { action() }
-53-        }
-54-
-55-    fun show() {
---
-108-                }
-109-                .apply {
-110-                    isEnabled = group > 0
-111:                    isFocusable = isEnabled
-112-                    alpha = if (isEnabled) 1f else .4f
-113-                }
-114-        val next =
---
-119-                }
-120-                .apply {
-121-                    isEnabled = (group + 1) * 20 < count
-122:                    isFocusable = isEnabled
-123-                    alpha = if (isEnabled) 1f else .4f
-124-                }
-125-        listOf(previous, next).forEach {
---
-171-            cell.nextFocusRightId = cells[if (i % 5 == 4 || i == cells.lastIndex) i else i + 1].id
-172-            cell.nextFocusUpId =
-173-                if (i >= 5) cells[i - 5].id
-174:                else if (i < 3 && previous.isFocusable) previous.id
-175:                else if (next.isFocusable) next.id else jump.id
-176-            cell.nextFocusDownId =
-177-                cells[
-178-                        if (i + 5 < cells.size) i + 5
---
-183-        next.nextFocusUpId = jump.id
-184-        previous.nextFocusDownId = cells.first().id
-185-        next.nextFocusDownId = cells[minOf(4, cells.lastIndex)].id
-186:        close.nextFocusDownId = if (previous.isFocusable) previous.id else cells.first().id
-187-        jump.nextFocusDownId =
-188:            if (next.isFocusable) next.id else cells[minOf(4, cells.lastIndex)].id
-189-        close.nextFocusLeftId = close.id
-190-        close.nextFocusRightId = jump.id
-191-        jump.nextFocusLeftId = close.id
-192-        jump.nextFocusRightId = jump.id
-193-        dialog.setContentView(content)
-194:        cells[(focused - group * 20).coerceIn(0, cells.lastIndex)].requestFocus()
-195-    }
-196-}
-
-app/src/main/kotlin/com/hongguotv/nativeapp/HomeScreen.kt
-198-    }
-199-
-200-    /** Rebuild only this bounded shelf area, preserving the old card or its nearest neighbour. */
-201:    fun updateShelves(next: List<Shelf>, requestFocus: Boolean = hasFocus()) {
-202-        val position = capturePosition()
-203:        render(next, position.focus, requestFocus, footerMore, position)
-204-    }
-205-
-206-    /**
---
-247-    fun render(
-248-        shelves: List<Shelf>,
-249-        focus: String,
-250:        requestFocus: Boolean,
-251-        more: (() -> Unit)?,
-252-        position: Position? = null,
-253-    ) {
---
-310-                            orientation = VERTICAL
-311-                            id = View.generateViewId()
-312-                            tag = key
-313:                            isFocusable = true
-314:                            isFocusableInTouchMode = true
-315-                            setPadding(dp(4), dp(4), dp(4), dp(8))
-316-                            background = shape(false)
-317-                        }
---
-356-                    view.contentDescription =
-357-                        entry?.let { "${shelf.title}，${it.series.title}，${it.label}" }
-358-                            ?: "查看全部${shelf.title}"
-359:                    view.setOnClickListener {
-360-                        lastFocus = key
-361-                        remember(key)
-362-                        card.entry?.let { open(it.series, it.resume) } ?: moreAction?.invoke()
---
-379-                            } else false
-380-                        }
-381-                    }
-382:                    view.setOnFocusChangeListener { _, focused ->
-383-                        view.background = shape(focused)
-384-                        if (focused) {
-385-                            lastFocus = key
---
-415-                label("更多热门  ›", 15f).apply {
-416-                    id = View.generateViewId()
-417-                    tag = "home:more"
-418:                    isFocusable = true
-419:                    isFocusableInTouchMode = true
-420-                    setPadding(dp(12), dp(12), dp(12), dp(12))
-421-                    background = shape(false)
-422:                    setOnFocusChangeListener { _, f ->
-423-                        background = shape(f)
-424-                        if (f) lastFocus = tag.toString()
-425-                    }
-426:                    setOnClickListener { more() }
-427-                }
-428-            contents.addView(next, LayoutParams(-1, -2).apply { topMargin = dp(8) })
-429-            footer += next
---
-459-        top.nextFocusDownId = firstId()
-460-        val preferred = focus.ifBlank { previous?.focus.orEmpty() }
-461-        val target = target(preferred, previous)
-462:        if (requestFocus) target.requestFocus()
-463-        post layout@{
-464-            if (revision != ticket) return@layout
-465-            fitArtwork()
---
-467-                if (revision != ticket) return@restore
-468-                if (previous != null) restoreOffsets(previous)
-469-                restoring = false
-470:                if (requestFocus && previous == null)
-471-                    rows
-472-                        .firstOrNull { row -> row.cards.any { it.view === target } }
-473-                        ?.let { revealSelection(it) }
---
-476-        }
-477-    }
-478-
-479:    fun restorePosition(position: Position, requestFocus: Boolean = true) {
-480-        restoring = true
-481:        if (requestFocus) target(position.focus, position).requestFocus()
-482-        post {
-483-            restoreOffsets(position)
-484-            restoring = false
-
-app/src/main/kotlin/com/hongguotv/nativeapp/DiscoveryScreen.kt
-191-            textSize = 12f
-192-            includeFontPadding = false
-193-            maxLines = 1
-194:            isFocusable = true
-195:            isClickable = true
-196-            setPadding(dp(8), dp(5), dp(8), dp(5))
-197-            minHeight = dp(30)
-198-            fun paint() {
---
-201-                setTextColor(if (selected) TvStyle.accent else TvStyle.text)
-202-                background = TvStyle.card(context, hasFocus(), selected)
-203-            }
-204:            setOnFocusChangeListener { _, _ -> paint() }
-205:            setOnClickListener { action() }
-206-            paint()
-207-        }
-208-
-209-    private fun toggleFocus() {
-210:        toggle.requestFocus()
-211-    }
-212-
-213-    private fun expand(value: Boolean) {
---
-292-            val strip =
-293-                HorizontalScrollView(context).apply {
-294-                    isHorizontalScrollBarEnabled = false
-295:                    isFocusable = false
-296-                    addView(choices)
-297-                }
-298-            strips[group.type] = strip
---
-350-        reset.nextFocusRightId = refresh.id
-351-        refresh.nextFocusLeftId = reset.id
-352-        expand(state.expanded)
-353:        focused?.let { controls[it]?.requestFocus() }
-354-        navigationChanged?.invoke()
-355-    }
-356-
---
-394-        filterDialog = dialog
-395-        dialog.setOnDismissListener {
-396-            if (filterDialog === dialog) filterDialog = null
-397:            if (!closed) controls[group.type to "__all_options__"]?.requestFocus()
-398-        }
-399-        dialog.show()
-400-        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-401-        dialog.window?.setLayout(dp(640), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
-402:        cells[options.indexOfFirst { it.id == state.selection.values[group.type].orEmpty() }.coerceAtLeast(0)].requestFocus()
-403-    }
-404-
-405-    private fun showItems() {
---
-441-            state.groups = state.groups.filter { it.type == "genre" }
-442-        showItems()
-443-        renderFilters()
-444:        focus?.let { controls[it]?.requestFocus() }
-445-        request(null)
-446-    }
-447-
---
-509-    fun start(focus: Boolean) {
-510-        if (focus) {
-511-            if (state.position != null && state.items.isNotEmpty()) browser.enter()
-512:            else entry().requestFocus()
-513-        }
-514-        if (!state.loaded) request(null)
-515-    }
-
-app/src/main/kotlin/com/hongguotv/nativeapp/ProducerWorksDialog.kt
-53-            scope.cancel()
-54-            worker.shutdownNow()
-55-            main.removeCallbacksAndMessages(null)
-56:            if (anchor.isAttachedToWindow) anchor.requestFocus()
-57-        }
-58:        more.setOnClickListener { loadPage() }
-59-        dialog.show()
-60-        dialog.window?.setBackgroundDrawable(TvVisual.panel(activity, modal = true))
-61-        dialog.window?.setLayout(minOf(dp(640), (activity.resources.displayMetrics.widthPixels * .9f).toInt()),
-62-            (activity.resources.displayMetrics.heightPixels * .85f).toInt())
-63-        render(listOf(current))
-64:        list.getChildAt(0)?.requestFocus()
-65-        worker.execute {
-66-            val known = runCatching { scope.run { repository.relatedProducerWorks(producer, current) } }
-67-            main.post {
---
-82-            val card = LinearLayout(activity).apply {
-83-                id = View.generateViewId(); tag = series.id
-84-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-85:                isFocusable = true; isFocusableInTouchMode = true
-86-                setPadding(dp(8), dp(6), dp(8), dp(6))
-87-                background = TvStyle.card(activity, false)
-88-                contentDescription = series.title
---
-91-            card.addView(poster, LinearLayout.LayoutParams(dp(63), dp(84)))
-92-            card.addView(label(series.title + "\n" + series.badge).apply { maxLines = 3 }, LinearLayout.LayoutParams(0, -2, 1f))
-93-            loadCover(poster, series.cover)
-94:            card.setOnFocusChangeListener { v, focused ->
-95-                v.background = TvStyle.card(activity, focused)
-96-                if (focused) loadCover(poster, series.cover)
-97-            }
-98:            card.setOnClickListener { close(); openSeries(series) }
-99-            list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(6) })
-100-        }
-101-        status.text = "已确认 ${rows.size} 部作品"
-
-app/src/main/kotlin/com/hongguotv/nativeapp/RelatedWorksView.kt
-51-        val refresh =
-52-            label("刷新", 15f).apply {
-53-                id = View.generateViewId()
-54:                isFocusable = true
-55:                isFocusableInTouchMode = true
-56-                setPadding(dp(14), dp(10), dp(14), dp(10))
-57-                background = TvStyle.card(context, false)
-58:                setOnFocusChangeListener { view, focused ->
-59-                    view.background = TvStyle.card(context, focused)
-60-                }
-61:                setOnClickListener { reload() }
-62-                nextFocusUpId = upper.lastOrNull()?.id ?: id
-63-            }
-64-        refreshButton = refresh
---
-87-        if (rows.isEmpty()) return
-88-        val allButton = label("全部季 / 相关作品 · ${rows.size} 项 ›").apply {
-89-            id = View.generateViewId()
-90:            isFocusable = true
-91-            setPadding(dp(12), dp(10), dp(12), dp(10))
-92-            background = TvStyle.card(context, false)
-93:            setOnFocusChangeListener { v, focused -> v.background = TvStyle.card(context, focused) }
-94:            setOnClickListener { showAll(rows, this) }
-95-        }
-96-        addView(allButton)
-97-        val scroll =
---
-109-                        orientation = VERTICAL
-110-                        id = View.generateViewId()
-111-                        tag = work.series.id
-112:                        isFocusable = true
-113:                        isFocusableInTouchMode = true
-114-                        contentDescription = work.series.title + "，" + work.label
-115-                        setPadding(dp(5), dp(5), dp(5), dp(9))
-116-                        background = TvStyle.card(context, false)
---
-135-                val status = label(if (work.upcoming) reserveLabel(work) else "已上线 · 查看剧集", 12f)
-136-                card.addView(status)
-137-                labels += work to status
-138:                card.setOnClickListener { open(work, card) }
-139:                card.setOnFocusChangeListener { view, focused ->
-140-                    view.background = TvStyle.card(context, focused)
-141-                    if (focused) {
-142-                        loadCover(image, work.series.cover)
---
-176-            LinearLayout(context).apply {
-177-                orientation = VERTICAL
-178-                id = View.generateViewId()
-179:                isFocusable = true
-180-                setPadding(dp(6), dp(6), dp(6), dp(6))
-181-                background = TvStyle.card(context, false)
-182-                contentDescription = work.series.title + "，" + work.label
---
-193-                    ellipsize = android.text.TextUtils.TruncateAt.END
-194-                })
-195-                addView(label(if (work.upcoming) reserveLabel(work) else work.label, 12f))
-196:                setOnFocusChangeListener { v, focused ->
-197-                    v.background = TvStyle.card(context, focused)
-198-                    if (focused) loadCover(poster, work.series.cover)
-199-                }
-200:                setOnClickListener { allDialog?.dismiss(); open(work, anchor) }
-201-            }.also { cell -> grid.addView(cell, GridLayout.LayoutParams().apply {
-202-                width = dp(148); height = -2
-203-                setMargins(dp(4), dp(4), dp(4), dp(4))
---
-214-        allDialog = dialog
-215-        dialog.setOnDismissListener {
-216-            if (allDialog === dialog) allDialog = null
-217:            if (anchor.isAttachedToWindow) anchor.requestFocus()
-218-        }
-219-        dialog.show()
-220-        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-221-        dialog.window?.setLayout(dp(680), minOf(dp(420), (resources.displayMetrics.heightPixels * .85f).toInt()))
-222:        cells.firstOrNull()?.requestFocus()
-223-    }
-224-
-225-    override fun onDetachedFromWindow() {
-
-app/src/main/kotlin/com/hongguotv/nativeapp/AccountController.kt
-500-                .setPositiveButton("确认", null)
-501-        if (error != null) builder.setMessage(error)
-502-        showDialog(builder)
-503:        dialog?.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
-504-            val value = field.text.toString().trim()
-505:            if (value.isBlank()) return@setOnClickListener
-506-            dialog?.dismiss()
-507-            submit(value)
-508-        }
---
-631-                .create()
-632-                .also { phoneDialog = it; it.show() }
-633-
-634:        phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener {
-635:            if (requestInFlight) return@setOnClickListener
-636-            val current = login
-637-            val value = code.text.toString().trim()
-638-            if (current == null) {
-639-                hint.text = "请先点「获取验证码」"
-640:                return@setOnClickListener
-641-            }
-642-            if (!value.matches(Regex("[0-9]{4,8}"))) {
-643-                hint.text = "请输入 4—8 位验证码"
-644:                return@setOnClickListener
-645-            }
-646-            phoneDialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = false
-647-            requestInFlight = true
---
-668-            )
-669-        }
-670-
-671:        countryButton.setOnClickListener {
-672-            pickCountryCode(context, country) { picked ->
-673-                country = picked
-674-                countryButton.text = "+$picked ▾"
-675-            }
-676-        }
-677-
-678:        send.setOnClickListener {
-679:            if (requestInFlight) return@setOnClickListener
-680-            val typed = mobile.text.toString().trim()
-681-            val number =
-682-                runCatching {
---
-686-                    }
-687-                    .getOrElse {
-688-                        hint.text = safeError(it)
-689:                        return@setOnClickListener
-690-                    }
-691-            val fresh = PhoneLogin(phoneHttp, phoneRetryGate)
-692-            login = null
-
-app/src/main/kotlin/com/hongguotv/nativeapp/ContinuousCatalogView.kt
-79-                navigating = false
-80-                onBrowsePosition?.invoke(0)
-81-                grid.setSelection(0)
-82:                grid.requestFocus()
-83:            } else upper.requestFocus()
-84-        }
-85-    private val cards =
-86-        object : BaseAdapter() {
---
-98-                val item = entries[position]
-99-                return bind(item, convertView).apply {
-100-                    tag = item.id
-101:                    isFocusable = false
-102:                    isClickable = false
-103-                    isLongClickable = false
-104-                    if (this is ViewGroup) descendantFocusability = FOCUS_BLOCK_DESCENDANTS
-105-                    background =
---
-146-                        requestMore(false)
-147-                }
-148-            }
-149:        grid.setOnFocusChangeListener { _, focus ->
-150-            paintFocus()
-151-            onGridFocus?.invoke(focus)
-152-        }
---
-163-                    key == KeyEvent.KEYCODE_DPAD_LEFT &&
-164-                        grid.selectedItemPosition % columns == 0 &&
-165-                        sideEntry != null -> {
-166:                        sideEntry?.requestFocus()
-167-                        true
-168-                    }
-169-                    key == KeyEvent.KEYCODE_DPAD_UP &&
-170-                        grid.selectedItemPosition in 0 until columns -> {
-171:                        upper.requestFocus()
-172-                        true
-173-                    }
-174-                    key == KeyEvent.KEYCODE_DPAD_DOWN &&
-175-                        grid.selectedItemPosition >= ((entries.size - 1) / columns) * columns -> {
-176-                        if (remoteNavigation) {
-177:                            if (failed) next.requestFocus() else if (available) requestMore(false)
-178-                        } else {
-179:                            (if (available) next else top).requestFocus()
-180-                            if (available && !failed) requestMore(true)
-181-                        }
-182-                        true
---
-222-            textSize = 14f
-223-            setTextColor(TvStyle.text)
-224-            includeFontPadding = false
-225:            isFocusable = true
-226:            isClickable = true
-227-            setPadding(dp(14), dp(6), dp(14), dp(6))
-228-            background = TvStyle.card(context, false)
-229:            setOnFocusChangeListener { _, focus -> background = TvStyle.card(context, focus) }
-230:            setOnClickListener { click() }
-231-        }
-232-
-233-    private fun paintFocus() {
---
-346-        paintStatus()
-347-        if (focusAdded && entries.size > firstNew) {
-348-            grid.setSelection(firstNew)
-349:            grid.requestFocus()
-350-        } else if (!available && next.hasFocus()) {
-351:            if (remoteNavigation) grid.requestFocus() else top.requestFocus()
-352-        }
-353-    }
-354-
---
-371-    }
-372-
-373-    fun enter() {
-374:        if (entries.isEmpty() && available) next.requestFocus() else grid.requestFocus()
-375-    }
-376-
-377-    fun close() {
-
-app/src/main/kotlin/com/hongguotv/nativeapp/HomeFeedScreen.kt
-152-    private fun button(value: String, action: () -> Unit) =
-153-        label(value, 14f).apply {
-154-            id = View.generateViewId()
-155:            isFocusable = true
-156:            isFocusableInTouchMode = true
-157:            isClickable = true
-158-            gravity = Gravity.CENTER
-159-            maxLines = 1
-160-            ellipsize = TextUtils.TruncateAt.END
---
-164-            minHeight = dp(44)
-165-            setPadding(dp(10), dp(10), dp(10), dp(10))
-166-            background = TvStyle.card(activity, false)
-167:            setOnFocusChangeListener { _, _ -> paintButton(this) }
-168:            setOnClickListener { action() }
-169-        }
-170-
-171-    private fun paintButton(button: TextView) {
---
-228-        tag.background = null
-229-
-230-        val content = LinearLayout(activity).apply { setPadding(0, 0, 0, 0) }
-231:        stage.isFocusable = true
-232:        stage.isFocusableInTouchMode = true
-233:        stage.isClickable = true
-234-        stage.contentDescription = "左右换剧，确定暂停或继续，下键进入操作"
-235-        stage.background = TvStyle.shape(activity, Color.BLACK, radius = 7)
-236-        stage.clipToOutline = true
---
-317-                    else if (state.category == DramaCategory.COMIC) comicButton else realButton)
-318-                    .id
-319-        }
-320:        stage.setOnFocusChangeListener { _, focused ->
-321-            hero.background = TvStyle.card(activity, focused)
-322-        }
-323:        stage.setOnClickListener { toggle() }
-324:        hero.setOnClickListener { toggle() }
-325-        stage.setOnKeyListener { _, key, event ->
-326-            when (key) {
-327-                KeyEvent.KEYCODE_DPAD_UP -> {
-328:                    if (event.action == KeyEvent.ACTION_DOWN) recommendButton.requestFocus()
-329-                    true
-330-                }
-331-                KeyEvent.KEYCODE_DPAD_DOWN -> {
---
-393-
-394-    // 设置进入首页时的初始焦点，并在应用位于前台时启动播放流程。
-395-    fun start(foreground: Boolean, focusNav: Boolean) {
-396:        if (focusNav) nav[0].requestFocus() else stage.requestFocus()
-397-        if (foreground) resume()
-398-    }
-399-
---
-488-
-489-    fun back(): Boolean {
-490-        if (!actions.hasFocus()) return false
-491:        stage.requestFocus()
-492-        return true
-493-    }
-494-
---
-504-    private fun showActions() {
-505-        actions.visibility = View.VISIBLE
-506-        paintActions()
-507:        (if (watchButton.isEnabled) watchButton else stage).requestFocus()
-508-    }
-509-
-510-    private fun paintActions() {
---
-528-            relatedCount.second > 0 -> "相关 ${relatedCount.first} 部 · 可预约 ${relatedCount.second} 部"
-529-            else -> "相关剧集 ${relatedCount.first} 部"
-530-        }
-531:        if (!relatedButton.isEnabled && relatedButton.hasFocus()) watchButton.requestFocus()
-532-        favoriteButton.text = state.current?.let { favoriteLabel(it.id) } ?: "账户收藏"
-533-        recommendButton.isSelected = state.recommendation
-534-        comicButton.isSelected = !state.recommendation && state.category == DramaCategory.COMIC
-
-app/src/main/kotlin/com/hongguotv/nativeapp/HomeSpotlight.kt
-43-        val actions = LinearLayout(context)
-44-        fun action(value: String, proceed: () -> Unit) = label(value, 14f, TvStyle.text).apply {
-45-            id = View.generateViewId()
-46:            isFocusable = true
-47:            isClickable = true
-48-            minHeight = dp(40)
-49-            gravity = Gravity.CENTER
-50-            setPadding(dp(14), dp(8), dp(14), dp(8))
-51-            background = TvStyle.card(context, false)
-52:            setOnFocusChangeListener { _, focus -> background = TvStyle.card(context, focus) }
-53:            setOnClickListener { proceed() }
-54-        }
-55-        play = action(if (resume) "▶ 继续观看" else "▶ 开始观看") { open(true) }
-56-        detail = action("查看详情") { open(false) }
-
-app/src/main/kotlin/com/hongguotv/nativeapp/FeedPlayback.kt
-460-    private val surface =
-461-        PlayerView(context).apply {
-462-            useController = false
-463:            isFocusable = false
-464-            resizeMode = when (frame) {
-465-                VideoFrameMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-466-                VideoFrameMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-
-app/src/main/kotlin/com/hongguotv/nativeapp/SearchSuggestionsView.kt
-43-    fun restore(values: List<String>) = render(values)
-44-    fun viewAt(index: Int): View? = chips.getOrNull(index)
-45-    fun selectedIndex(): Int = chips.indexOfFirst { it.hasFocus() }
-46:    fun focusAt(index: Int) { chips.getOrNull(index)?.requestFocus() }
-47-    var keyboardEntry: () -> View = { peers.lastOrNull() ?: input }
-48-
-49-    private val watcher =
---
-59-        }
-60-
-61-    init {
-62:        isFocusable = false
-63-        line.orientation = if (vertical || grid) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
-64-        if (grid) addView(line, LayoutParams(-1, -2))
-65-        else addView(HorizontalScrollView(context).apply { isHorizontalScrollBarEnabled = false; addView(line) }, LayoutParams(-1, -2))
---
-108-                    if (!grid) maxWidth = dp(300)
-109-                    gravity = android.view.Gravity.CENTER_VERTICAL
-110-                    includeFontPadding = true
-111:                    isFocusable = true
-112:                    isClickable = true
-113-                    setTextColor(TvStyle.text)
-114-                    setPadding(dp(12), dp(8), dp(12), dp(8))
-115-                    minHeight = if (grid) maxOf(dp(76), (paint.fontSpacing * 2).toInt() + paddingTop + paddingBottom + dp(4)) else dp(36)
-116-                    background = if (grid) TvStyle.shape(context, TvStyle.surface, TvStyle.outline) else TvStyle.card(context, false)
-117:                    setOnFocusChangeListener { _, focus ->
-118-                        background = if (grid) TvStyle.shape(context, if (focus) TvStyle.text else TvStyle.surface, if (focus) TvStyle.text else TvStyle.outline) else TvStyle.card(context, focus)
-119-                        setTextColor(if (grid && focus) TvStyle.background else TvStyle.text)
-120-                    }
-121:                    setOnClickListener { search(value) }
-122-                }
-123-            chips += chip
-124-            if (grid) {
---
-140-        scrollTo(0, 0)
-141-        updateNavigation()
-142-        if (focusedValue != null) {
-143:            (chips.firstOrNull { it.text.toString() == focusedValue } ?: chips.firstOrNull() ?: keyboardEntry()).requestFocus()
-144-        }
-145-    }
-146-
-
-app/src/main/kotlin/com/hongguotv/nativeapp/AppUpdater.kt
-187-                dialog = null
-188-                statusView = null
-189-            }
-190:            if (from?.isAttachedToWindow == true) from.requestFocus()
-191-        }
-192-        next.show()
-193:        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-194-            when {
-195-                ready -> install()
-196-                available != null -> download()
-197-                else -> check()
-198-            }
-199-        }
-200:        next.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-201-            next.dismiss()
-202-        }
-203-        renderActions()
-204-        next.getButton(AlertDialog.BUTTON_POSITIVE).post {
-205:            if (dialog === next) next.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus()
-206-        }
-207-    }
-208-
-
-app/src/main/kotlin/com/hongguotv/nativeapp/MainActivity.kt
-435-    private fun focusStyle(view: View, selected: Boolean = false) {
-436-        view.id = View.generateViewId()
-437-        view.isSelected = selected
-438:        view.isFocusable = true
-439:        view.isFocusableInTouchMode = true
-440-        fun paint(focused: Boolean) {
-441-            view.background = TvStyle.card(this, focused, selected)
-442-        }
-443-        paint(false)
-444:        view.setOnFocusChangeListener { _, focused -> paint(focused) }
-445-    }
-446-
-447-    // 统一创建可点击的文字按钮；将界面样式、焦点效果与业务回调连接起来。
---
-452-            minHeight = dp(42)
-453-            if (selected) setTextColor(accent)
-454-            focusStyle(this, selected)
-455:            setOnClickListener { onClick() }
-456-        }
-457-
-458-    private fun addButton(
---
-528-                val focusNav = nav.any { it.hasFocus() }
-529-                val focusManage = historyManage?.hasFocus() == true
-530-                showCatalog(focusNav = focusNav)
-531:                if (focusManage) historyManage?.requestFocus()
-532-                if (cloudAccount.signedIn) {
-533-                    if (
-534-                        tab == 5 &&
---
-759-            else if (problem is java.net.SocketTimeoutException) "连接超时"
-760-            else problem.message.orEmpty().replace(Regex("https?://\\S+"), "[地址]").take(160)
-761-        parent.addView(text(detail, 13f, muted))
-762:        addButton(parent, "重试", onClick = retry).requestFocus()
-763-    }
-764-
-765-    // 导航按钮的点击入口：记录当前栏目状态，再切换到目标栏目。
---
-781-        ranking = saved?.ranking
-782-        catalogFocus = tabFocus[next].orEmpty()
-783-        showCatalog(load = ((next <= 2 || next == 7 && query.isNotBlank()) && catalog.isEmpty()), focusNav = keepNavigationFocus && next != 7 && next != 6)
-784:        if (next == 7) tvSearchPanel?.entry()?.requestFocus()
-785-        refreshAccountSection()
-786-    }
-787-
---
-961-            val body = column()
-962-            container.addView(body, lp(-1, 0).apply { weight = 1f })
-963-            settings(body)
-964:            if (focusNav) nav[tab].requestFocus()
-965-            return
-966-        }
-967-        if (tab == 8) {
---
-969-            homeFeedIdentity = cloudAccount.recommendationIdentity
-970-            if (cloudAccount.recommendationLoading) {
-971-                container.addView(text("正在恢复账号推荐…", 18f, muted))
-972:                if (focusNav) nav[8].requestFocus()
-973-                return
-974-            }
-975-            val feed =
---
-1058-            nav.forEach { it.nextFocusDownId = browser.entry().id }
-1059-            browser.navigationChanged = { nav.forEach { it.nextFocusDownId = browser.entry().id } }
-1060-            browser.start(!focusNav)
-1061:            if (focusNav) nav[tab].requestFocus()
-1062-            return
-1063-        }
-1064-        if (tab == 7) {
---
-1083-            nav.forEach { it.nextFocusDownId = panel.entry().id }
-1084-            if (query.isBlank()) {
-1085-                panel.results.addView(TvEmptyState(this, "想看什么？", "输入剧名或拼音，选择联想词或按搜索\n也可以用手机输入"), lp(-1, -1))
-1086:                panel.entry().requestFocus()
-1087-                return
-1088-            }
-1089-        } else if (tab > 2) {
---
-1210-            if (tab == 0) catalogGrid(body, focusNav, focusType, loading = true)
-1211-            else {
-1212-                message(body, "正在加载…")
-1213:                if (tvSearchPanel != null) tvSearchPanel?.entry()?.requestFocus()
-1214:                else if (focusType) typeButtons[hotContentType]?.requestFocus()
-1215:                else nav[tab].requestFocus()
-1216-            }
-1217-            val requestTab = tab
-1218-            val requestPage = page
---
-1250-                        catalogGrid(body, keepNav || focusNav, keepType || focusType)
-1251-                        if (submittedSearch == requestQuery) submittedSearch = null
-1252-                        if (focusResults && catalog.isNotEmpty()) continuousCatalog?.enter()
-1253:                        else if (keepInput) searchInput?.requestFocus()
-1254:                        else if (keepSuggestion != null) keepSuggestion.requestFocus()
-1255-                    }
-1256-                },
-1257-                { problem ->
---
-1273-                        addCollectionHeader(body)
-1274-                        error(body, problem) { showCatalog(true) }
-1275-                        searchSuggestions?.updateNavigation()
-1276:                        if (focusType) typeButtons[hotContentType]?.requestFocus()
-1277:                        else if (resumeCards.isNotEmpty()) resumeCards.first().requestFocus()
-1278-                    }
-1279-                },
-1280-            )
---
-1395-                typeButtons.values.forEach { it.nextFocusDownId = resumeCards.first().id }
-1396-                resumeCards.forEach { it.nextFocusDownId = it.id }
-1397-            }
-1398:            if (focusType) typeButtons[hotContentType]?.requestFocus()
-1399:            else if (collectionBack != null && !focusNav) collectionBack?.requestFocus()
-1400:            else if (focusNav || resumeCards.isEmpty()) nav[tab].requestFocus()
-1401:            else resumeCards.first().requestFocus()
-1402-            return
-1403-        }
-1404-        val cards = mutableListOf<View>()
---
-1493-                        }
-1494-                card.addView(badge, lp(-1, -2))
-1495-                if (isFavorites()) favoriteBadges[item.id] = badge
-1496:                card.setOnClickListener {
-1497:                    if (reservationNotice(item, card)) return@setOnClickListener
-1498-                    catalogFocus = item.id
-1499-                    openDetail(
-1500-                        item,
---
-1519-                        true
-1520-                    } else false
-1521-                }
-1522:                card.setOnFocusChangeListener { _, focused ->
-1523-                    card.background = TvStyle.card(this, focused)
-1524-                    if (focused) {
-1525-                        catalogFocus = item.id
---
-1565-                    }
-1566-                    .apply {
-1567-                        isEnabled = page > 1
-1568:                        isFocusable = page > 1
-1569-                        alpha = if (page > 1) 1f else .4f
-1570-                    }
-1571-            paging.addView(
---
-1590-                    }
-1591-                    .apply {
-1592-                        isEnabled = hasMore
-1593:                        isFocusable = hasMore
-1594-                        alpha = if (hasMore) 1f else .4f
-1595-                    }
-1596-            if (collection == "hot" && !hasMore && collectionReturn?.hasMore == true) {
---
-1622-                if (index + count < cards.size) cards[index + count].id
-1623-                else if (index / count < cards.lastIndex / count) cards.last().id
-1624-                else
-1625:                    next?.takeIf { it.isFocusable }?.id
-1626:                        ?: prev?.takeIf { it.isFocusable }?.id
-1627-                        ?: card.id
-1628-        }
-1629-        nav.forEach {
---
-1665-        searchInput?.nextFocusDownId = cards.first().id
-1666-        searchButton?.nextFocusDownId = cards[minOf(4, cards.lastIndex)].id
-1667-        searchActions.forEach { it.nextFocusDownId = cards[minOf(4, cards.lastIndex)].id }
-1668:        if (focusType) typeButtons[hotContentType]?.requestFocus()
-1669:        else if (focusNav) nav[tab].requestFocus()
-1670-        else if (
-1671-            resumeCards.isNotEmpty() &&
-1672-                (catalogFocus.isEmpty() || catalogFocus.startsWith("resume:"))
-1673-        )
-1674-            (resumeCards.firstOrNull { it.tag == catalogFocus } ?: resumeCards.first())
-1675:                .requestFocus()
-1676:        else cards[displayed.indexOfFirst { it.id == catalogFocus }.coerceAtLeast(0)].requestFocus()
-1677-        val savedScroll = scrollPositions[catalogPageKey]
-1678-        scroll.post {
-1679-            if (catalogScroll !== scroll) return@post
---
-1789-            browser.setSideEntry(if (panel.showingResults) panel.resultBackEntry() else panel.middleEntry() ?: panel.entry())
-1790-            nav.forEach { it.nextFocusDownId = panel.entry().id }
-1791-        }
-1792:        if (focusNav) nav[tab].requestFocus()
-1793:        else if (focusType) upper.requestFocus() else browser.enter()
-1794-    }
-1795-
-1796-    private fun reservationNotice(series: Series, anchor: View): Boolean {
---
-1926-            homePosition,
-1927-        )
-1928-        home.showStatus(if (loading && hot.isEmpty()) "正在加载热门…" else "")
-1929:        if (focusNav || focusType) nav[0].requestFocus()
-1930-        if (hot.isNotEmpty() && !homeContentLogged) {
-1931-            homeContentLogged = true
-1932-            body.post {
---
-2002-        if (screen != "catalog") return
-2003-        val home = homeScreen
-2004-        if (home != null) {
-2005:            home.updateShelves(homeShelves(), requestFocus = true)
-2006-            home.refreshSelection()
-2007-            return
-2008-        }
---
-2171-                focusStyle(this)
-2172-                setPadding(dp(20), dp(8), dp(18), dp(8))
-2173-                background = TvVisual.row(this@MainActivity, false)
-2174:                setOnFocusChangeListener { _, focused ->
-2175-                    background = TvVisual.row(this@MainActivity, focused)
-2176-                    invalidate()
-2177-                }
-2178:                setOnClickListener { action() }
-2179-            }
-2180-            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(4) })
-2181-            entries += view
---
-2187-                setPadding(dp(20), dp(11), dp(14), dp(11))
-2188-                minimumHeight = dp(46)
-2189-                background = TvVisual.row(this@MainActivity, false)
-2190:                setOnFocusChangeListener { _, focused -> background = TvVisual.row(this@MainActivity, focused) }
-2191-            }
-2192-            view.addView(text(label, 15f), lp(0, -2).apply { weight = 1f })
-2193-            val control = SettingsSwitch(this).apply {
-2194-                isChecked = checked
-2195:                isClickable = false
-2196:                isFocusable = false
-2197-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-2198-                if (android.os.Build.VERSION.SDK_INT >= 23) thumbTintList = android.content.res.ColorStateList.valueOf(white)
-2199-                if (android.os.Build.VERSION.SDK_INT >= 23) trackTintList = android.content.res.ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(accent, TvStyle.outline))
-2200-            }
-2201-            view.addView(control)
-2202:            view.setOnFocusChangeListener { _, focused ->
-2203-                view.background = TvVisual.row(this@MainActivity, focused)
-2204-                (view.getChildAt(0) as? TextView)?.setTextColor(TvVisual.primary)
-2205-                control.rowFocused = focused
-2206-            }
-2207-            fun describe() { view.contentDescription = "$label，${if (control.isChecked) "开启" else "关闭"}，按确定切换" }
-2208-            describe()
-2209:            view.setOnClickListener { control.isChecked = !control.isChecked; change(control.isChecked); describe() }
-2210-            content.addView(view, lp(-1, -2).apply { bottomMargin = dp(8) })
-2211-            entries += view
-2212-        }
---
-2214-        val buttons = categories.mapIndexed { index, title ->
-2215-            button(title, onClick = {
-2216-                if (settingsGroup != index) render(index)
-2217:                settingsRows.getOrNull(settingsPositions[index].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
-2218-            }).apply {
-2219-                tag = "settings-category-$index"
-2220-                minHeight = dp(52)
-2221-                gravity = Gravity.CENTER_VERTICAL
-2222-                setPadding(dp(22), dp(10), dp(12), dp(10))
-2223-                sidebar.addView(this, lp(-1, -2).apply { bottomMargin = dp(8) })
-2224:                setOnFocusChangeListener { _, focused ->
-2225-                    if (focused) render(index)
-2226-                    background = TvVisual.row(this@MainActivity, focused, settingsGroup == index, category = true)
-2227-                    setTextColor(if (focused || settingsGroup == index) TvVisual.focusedValue else muted)
---
-2313-                view.nextFocusUpId = settingsRows.getOrNull(position - 1)?.id ?: nav[tab].id
-2314-                view.nextFocusDownId = settingsRows.getOrNull(position + 1)?.id ?: view.id
-2315-                val paint = view.onFocusChangeListener
-2316:                view.setOnFocusChangeListener { target, focused ->
-2317-                    paint?.onFocusChange(target, focused)
-2318-                    if (focused) settingsPositions[index] = position
-2319-                }
---
-2329-        }
-2330-        render(settingsGroup)
-2331-        parent.addView(text("↑↓ 选择  ·  → 进入选项  ·  ← 返回分类  ·  返回：分类 / 顶部导航", 12f, Color.rgb(112, 122, 140)).apply { setPadding(0, dp(12), 0, 0) })
-2332:        settingsRows.getOrNull(settingsPositions[settingsGroup].coerceAtMost(settingsRows.lastIndex))?.requestFocus()
-2333-    }
-2334-
-2335-    private fun saveSearchDraft() {
---
-2624-        val groupStrip = row()
-2625-        val groupScroll = HorizontalScrollView(this).apply {
-2626-            isHorizontalScrollBarEnabled = false
-2627:            isFocusable = false
-2628-            addView(groupStrip)
-2629-        }
-2630-        groupRow.addView(groupScroll, lp(0, dp(44)).apply { weight = 1f; rightMargin = dp(12) })
---
-2635-                if (group != index) {
-2636-                    group = index
-2637-                    showDetail(true)
-2638:                    root.findViewWithTag<View>("episode-group-$index")?.requestFocus()
-2639-                }
-2640-            }.apply {
-2641-                tag = "episode-group-$index"
---
-2650-                        if (isSelected || hasFocus()) TvStyle.raised else Color.TRANSPARENT,
-2651-                        if (hasFocus()) white else Color.TRANSPARENT, radius = 20)
-2652-                }
-2653:                setOnFocusChangeListener { _, _ -> paintGroup() }
-2654-                paintGroup()
-2655-                groupStrip.addView(this, lp(-2, dp(40)).apply { rightMargin = dp(6) })
-2656-            }
---
-2829-        if (focusEpisode)
-2830-            episodes
-2831-                .getOrNull((episodeIndex - group * 20).coerceIn(0, episodes.lastIndex))
-2832:                ?.requestFocus()
-2833:        else play.requestFocus()
-2834-    }
-2835-
-2836-    // 正式播放入口：准备指定剧集的播放资源与播放器状态。
---
-2955-                    layoutInflater.inflate(R.layout.video_player, root, false) as PlayerView else PlayerView(this)).apply {
-2956-                    useController = false
-2957-                    resizeMode = frameResizeMode()
-2958:                    isFocusable = false
-2959-                    setKeepContentOnPlayerReset(true)
-2960-                    setShutterBackgroundColor(Color.BLACK)
-2961-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
---
-2968-            persistentTime = text("", 12f, Color.WHITE)
-2969-            persistentBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000; progressTintList = android.content.res.ColorStateList.valueOf(accent) }
-2970-            persistentProgress = column().apply {
-2971:                isFocusable = false
-2972-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
-2973-                setPadding(dp(12), dp(4), dp(12), dp(6))
-2974-                setBackgroundColor(Color.argb(160, 0, 0, 0))
---
-2984-                setTextColor(Color.WHITE)
-2985-                setPadding(dp(10), dp(5), dp(10), dp(5))
-2986-                background = rounded(Color.argb(150, 11, 15, 21))
-2987:                isFocusable = false
-2988-            }.also { clock ->
-2989-                root.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-2990-                    topMargin = (resources.displayMetrics.heightPixels * .05f).toInt()
---
-3019-                    max = 1000
-3020-                    progressTintList = android.content.res.ColorStateList.valueOf(accent)
-3021-                    progressBackgroundTintList = android.content.res.ColorStateList.valueOf(surface)
-3022:                    isFocusable = false
-3023:                    isFocusableInTouchMode = false
-3024-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-3025-                        override fun onStartTrackingTouch(seekBar: SeekBar) {
-3026-                            isSeekingProgress = true
---
-3066-                },
-3067-                FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM),
-3068-            )
-3069:            view.setOnClickListener {
-3070-                when {
-3071-                    screen != "player" -> Unit
-3072-                    playError || waitingForFirstFrame -> showHud()
---
-3938-        val toolsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-3939-        val searchButton = Button(this).apply { text = "搜索伴机" }
-3940-        val qrButton = Button(this).apply { text = "扫码输入" }
-3941:        searchButton.setOnClickListener {
-3942-            it.isEnabled = false
-3943-            searchStatus.text = "正在搜索局域网伴机（约 5 秒）…"
-3944-            val started =
---
-3968-                searchStatus.text = "此设备不支持自动发现，请改用扫码或手动输入"
-3969-            }
-3970-        }
-3971:        qrButton.setOnClickListener {
-3972-            tvTools.phoneInput(
-3973-                anchor,
-3974-                inputTitle = "手机输入伴机地址",
---
-4007-                .setNegativeButton("取消", null)
-4008-                .create()
-4009-        dialog.setOnShowListener {
-4010:            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-4011-                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
-4012-                if (toggle.isChecked && (normalized == null || tokenInput.text.toString().isBlank())) {
-4013-                    val reason = if (normalized == null) "地址格式不对（示例 192.168.1.100:46521）" else "启用伴机需填写令牌（见伴机电脑启动日志）"
-4014-                    Toast.makeText(this, reason, Toast.LENGTH_SHORT).show()
-4015:                    return@setOnClickListener
-4016-                }
-4017-                relayStore.enabled = toggle.isChecked
-4018-                if (normalized != null) relayStore.host = normalized
-4019-                relayStore.token = tokenInput.text.toString().trim()
-4020-                relayDialog?.dismiss()
-4021-            }
-4022:            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
-4023-                val normalized = RelayClient.normalizeHost(hostInput.text.toString())
-4024-                if (normalized == null) {
-4025-                    Toast.makeText(this, "地址格式不对（示例 192.168.1.100:46521）", Toast.LENGTH_SHORT).show()
-4026:                    return@setOnClickListener
-4027-                }
-4028-                Toast.makeText(this, "正在连接 $normalized …", Toast.LENGTH_SHORT).show()
-4029-                val token = tokenInput.text.toString().trim()
---
-4043-        }
-4044-        dialog.setOnDismissListener {
-4045-            relayDialog = null
-4046:            if (anchor.isAttachedToWindow) anchor.requestFocus()
-4047-        }
-4048-        relayDialog = dialog
-4049-        dialog.show()
---
-4135-        val actions = row()
-4136-        controls.addView(actions)
-4137-        val retryButton = addButton(actions, "立即重试") { playEpisode(episodeIndex, retryPosition, retryAutoplay) }
-4138:        if (recovery.attempts == 0) retryButton.requestFocus()
-4139-        lowerTier?.let { lower ->
-4140-            addButton(actions, "尝试 ${lower}P") {
-4141-                library.maxQuality = lower
---
-4528-        addButton(transport, "上一集") { if (episodeIndex > 0) playEpisode(episodeIndex - 1) }
-4529-            .apply {
-4530-                isEnabled = episodeIndex > 0
-4531:                isFocusable = episodeIndex > 0
-4532-                alpha = if (episodeIndex > 0) 1f else .4f
-4533-            }
-4534-        addButton(transport, "下一集") {
---
-4537-            .apply {
-4538-                val enabled = episodeIndex < (detail?.episodes?.lastIndex ?: 0)
-4539-                isEnabled = enabled
-4540:                isFocusable = enabled
-4541-                alpha = if (enabled) 1f else .4f
-4542-            }
-4543-        val options = row().apply { setPadding(0, dp(6), 0, 0) }
---
-4593-                    )
-4594-                }
-4595-                .apply { tag = "playback-settings" }
-4596:        play.requestFocus()
-4597-        showHud()
-4598-    }
-4599-
---
-4651-                    if (resumeOnClose && foreground && generation == ticket && screen == "player") {
-4652-                        if (requestedAutoplay && !sleepStopped && !pausedForLifecycle)
-4653-                            player?.play()
-4654:                        if (anchor.isAttachedToWindow) anchor.requestFocus()
-4655-                        if (overlayWasVisible) showHud() else hidePlaybackOverlay()
-4656-                    }
-4657-                },
---
-4839-            return
-4840-        }
-4841-        if (screen == "catalog" && tab == 6) {
-4842:            if (settingsRows.any { it.hasFocus() }) { settingsSidebar.getOrNull(settingsGroup)?.requestFocus(); return }
-4843:            if (settingsSidebar.any { it.hasFocus() }) { nav[6].requestFocus(); return }
-4844-        }
-4845-        if (screen == "catalog" && tab == 8 && !nav[8].hasFocus()) {
-4846-            if (homeFeed?.back() == true) return
-4847:            nav[8].requestFocus()
-4848-            return
-4849-        }
-4850-        if (screen == "catalog" && tab == 7 && tvSearchPanel != null && !nav[7].hasFocus()) {
-4851-            if (tvSearchPanel?.back() == true) return
-4852:            nav[7].requestFocus()
-4853-            return
-4854-        }
-4855-        if (screen == "catalog" && tab == 1 && !nav[1].hasFocus()) {
-4856:            nav[1].requestFocus()
-4857-            return
-4858-        }
-4859-        if (screen == "catalog" && tab == 2 && !nav[2].hasFocus() && !window.decorView.isInTouchMode) {
-4860-            rankingScreen?.backToTop()
-4861:            nav[2].requestFocus()
-4862-            return
-4863-        }
-4864-        when (screen) {
---
-4884-                else if (collection != null) {
-4885-                    leaveCollection()
-4886-                    showCatalog()
-4887:                } else nav.getOrNull(tab)?.requestFocus()
-4888-        }
-4889-    }
-4890-
-
-app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
-36-            setImageResource(R.drawable.brand_mark)
-37-            scaleType = ImageView.ScaleType.FIT_CENTER
-38-            contentDescription = "hongguoTV"
-39:            isFocusable = false
-40-            (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
-41-        }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
-42-        destinations.forEach { (index, label) ->
---
-46-                text = label
-47-                textSize = if (compact) 13f else 14f
-48-                maxLines = 1
-49:                isFocusable = true
-50:                isClickable = true
-51-                gravity = android.view.Gravity.CENTER_VERTICAL
-52-                setPadding(dp(10), dp(if (compact) 6 else 10), dp(8), dp(if (compact) 6 else 10))
-53-                compoundDrawablePadding = dp(9)
---
-56-                fun paint() {
-57-                    paintNavigation(this)
-58-                }
-59:                setOnFocusChangeListener { _, _ -> paint() }
-60:                setOnClickListener {
-61-                    when {
-62-                        index == 9 -> scan(this)
-63-                        index != selectedDestination -> navigate(index)
---
-113-    }
-114-
-115-    fun restoreContent(): Boolean {
-116:        val target = remembered?.takeIf { inContent(it) && it.isShown && it.isFocusable }
-117-            ?: body.getFocusables(FOCUS_FORWARD).firstOrNull()
-118:        return target?.requestFocus() == true
-119-    }
-120-
-121-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
---
-124-        if (index >= 0 && event.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
-125-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)) {
-126-            if (event.action == KeyEvent.ACTION_DOWN) when (event.keyCode) {
-127:                KeyEvent.KEYCODE_DPAD_UP -> buttons[(index - 1).coerceAtLeast(0)].requestFocus()
-128:                KeyEvent.KEYCODE_DPAD_DOWN -> buttons[(index + 1).coerceAtMost(buttons.lastIndex)].requestFocus()
-129-                KeyEvent.KEYCODE_DPAD_RIGHT -> restoreContent()
-130-            }
-131-            return true
---
-141-                val contentTarget = android.view.FocusFinder.getInstance()
-142-                    .findNextFocus(body, focused, direction)
-143-                    ?.takeIf { it !== focused && inContent(it) }
-144:                if (contentTarget != null) contentTarget.requestFocus()
-145:                else if (direction == FOCUS_UP) navigation[selectedDestination].requestFocus()
-146-                return true
-147-            }
-148-        }
---
-150-            inContent(focused) && focused !is android.widget.AbsListView && focused !is HandlesHorizontalKeys) {
-151-            val next = focused?.focusSearch(FOCUS_LEFT)
-152-            if (next == null || !inContent(next) || next === focused) {
-153:                navigation[selectedDestination].requestFocus()
-154-                return true
-155-            }
-156-        }
-157-        val handled = super.dispatchKeyEvent(event)
-158-        if (event.action == KeyEvent.ACTION_DOWN && vertical && inContent(focused) && !inContent(findFocus())) {
-159:            focused?.requestFocus()
-160-            return true
-161-        }
-162-        return handled
+index 3edf1fc..92aea23 100644
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/AccountController.kt
++++ b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/AccountController.kt
+@@ -401,12 +401,6 @@ class AccountController(private val activity: Activity, private val play: (Cloud
+         onHistoryChanged?.invoke()
+     }
+ 
+-    internal fun dispatchPhoneKey(event: android.view.KeyEvent): Boolean {
+-        val modal = dialog?.takeIf { it.isShowing } ?: return false
+-        modal.dispatchKeyEvent(event)
+-        return true
+-    }
+-
+     val showing
+         get() = dialog?.isShowing == true
+ 
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
+index fe5c4eb..8d63f85 100644
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
++++ b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/CatalogShell.kt
+@@ -7,13 +7,12 @@ import android.view.KeyEvent
+ import android.view.View
+ import android.widget.LinearLayout
+ import android.widget.ImageView
+-import android.widget.Space
+ import android.widget.TextView
+ 
+ internal interface HandlesHorizontalKeys
+ 
+ /** Fixed navigation rail. Content geometry never changes when the rail gains focus. */
+-internal class CatalogShell(context: Context, private val phone: (View) -> Unit = {}, private val navigate: (Int) -> Unit) : LinearLayout(context) {
++internal class CatalogShell(context: Context, private val scan: (TextView) -> Unit = {}, private val navigate: (Int) -> Unit) : LinearLayout(context) {
+     val body = LinearLayout(context).apply { orientation = VERTICAL }
+     private val rail = LinearLayout(context).apply { orientation = VERTICAL }
+     private val destinations = listOf(0 to "首页", 8 to "随心看", 1 to "找剧", 7 to "搜索", 2 to "排行榜", 3 to "我的", 9 to "扫码", 6 to "设置")
+@@ -41,11 +40,10 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit
+             (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
+         }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
+         destinations.forEach { (index, label) ->
+-            if (index == 9) rail.addView(Space(context), LayoutParams(1, 0, 1f))
++            if (index == 9) rail.addView(android.widget.Space(context), LayoutParams(1, 0, 1f))
+             val button = TextView(context).apply {
+                 id = View.generateViewId()
+                 text = label
+-                if (index == 9) contentDescription = "手机扫码控制"
+                 textSize = if (compact) 13f else 14f
+                 maxLines = 1
+                 isFocusable = true
+@@ -59,7 +57,13 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit
+                     paintNavigation(this)
+                 }
+                 setOnFocusChangeListener { _, _ -> paint() }
+-                setOnClickListener { if (index == 9) phone(this) else if (index != selectedDestination) navigate(index) else restoreContent() }
++                setOnClickListener {
++                    when {
++                        index == 9 -> scan(this)
++                        index != selectedDestination -> navigate(index)
++                        else -> restoreContent()
++                    }
++                }
+                 paint()
+             }
+             buttons += button
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneConsole.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneConsole.kt
+deleted file mode 100644
+index 3efcd4d..0000000
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneConsole.kt
++++ /dev/null
+@@ -1,282 +0,0 @@
+-// SPDX-License-Identifier: GPL-3.0-only
+-package com.hongguotv.nativeapp
+-
+-import android.app.Activity
+-import android.net.ConnectivityManager
+-import android.os.Handler
+-import android.os.Looper
+-import android.view.View
+-import com.hongguotv.core.*
+-import java.util.concurrent.FutureTask
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicBoolean
+-import okhttp3.ConnectionPool
+-import okhttp3.OkHttpClient
+-import okhttp3.ResponseBody
+-import okio.ForwardingSource
+-import okio.buffer
+-import org.json.JSONObject
+-import org.json.JSONArray
+-
+-/** Owns one foreground session; no background service, wake lock, web view or player. */
+-internal class PhoneConsole(
+-    private val activity: Activity,
+-    private val tools: TvTools,
+-    private val catalog: PhoneControlCatalog,
+-    private val control: (JSONObject) -> JSONObject,
+-    private val addressProvider: () -> String? = {
+-        LanInputAddresses.find(activity.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as ConnectivityManager).firstOrNull()?.address
+-    },
+-    private val httpProvider: () -> OkHttpClient = { ContentRepository().http },
+-    private val showSearch: (String, Int, CatalogPage) -> Unit,
+-) {
+-    private val main = Handler(Looper.getMainLooper())
+-    private var session: Session? = null
+-    private var starting = false
+-    private var generation = 0
+-    private var enabled = false
+-    private var foreground = false
+-    private var address: String? = null
+-
+-    private class Session(val http: OkHttpClient, val repository: ContentRepository, val active: AtomicBoolean, val covers: PhoneCoverLoader) {
+-        val browsing = AtomicBoolean(false)
+-        val readingCover = AtomicBoolean(false)
+-        val suggesting = AtomicBoolean(false)
+-        val authenticating = AtomicBoolean(false)
+-        var login: WebLogin? = null
+-        var loginScope = 0
+-        var resendAt = 0L
+-        var qrExpiresAt = 0L
+-        var pollAt = 0L
+-        private var window = System.nanoTime()
+-        private var commands = 0
+-        @Synchronized fun allowCommand(): Boolean {
+-            val now = System.nanoTime()
+-            if (now - window >= TimeUnit.SECONDS.toNanos(1)) { window = now; commands = 0 }
+-            return ++commands <= 12
+-        }
+-        lateinit var server: PhoneControlServer
+-        fun close() {
+-            active.set(false)
+-            login?.cancel()
+-            login = null
+-            if (::server.isInitialized) server.close()
+-            Thread({ http.dispatcher.cancelAll(); http.connectionPool.evictAll(); covers.close() }, "hongguotv-phone-cleanup").apply { isDaemon = true; start() }
+-        }
+-    }
+-
+-    fun resume() { foreground = true; if (enabled) start(null, false) }
+-    fun stop() {
+-        foreground = false
+-        generation++
+-        starting = false
+-        session?.close()
+-        session = null
+-        address = null
+-        catalog.clear()
+-    }
+-    fun disconnect() { enabled = false; stop(); foreground = true }
+-    fun networkChanged() {
+-        if (!foreground || !enabled) return
+-        if (findAddress() != address) { stop(); foreground = true }
+-        if (session == null) start(null, false)
+-    }
+-    private fun findAddress() = runCatching(addressProvider).getOrNull()
+-
+-    fun show(anchor: View?) {
+-        enabled = true
+-        start(anchor, true)
+-    }
+-
+-    private fun start(anchor: View?, show: Boolean) {
+-        if (!foreground || starting) return
+-        session?.let { if (show) tools.phoneConsole(it.server.url, anchor, ::disconnect); return }
+-        val selected = findAddress()
+-        if (selected == null) {
+-            if (show) tools.info("手机控制台", "请将手机与电视连接到可互通的 Wi-Fi 或有线局域网，然后重试。", anchor)
+-            return
+-        }
+-        address = selected
+-        starting = true
+-        val ticket = ++generation
+-        Thread({
+-            val active = AtomicBoolean(true)
+-            val http = httpProvider().newBuilder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS)
+-                .callTimeout(12, TimeUnit.SECONDS)
+-                .addInterceptor { chain ->
+-                    if (!active.get()) throw java.io.IOException("Session closed")
+-                    val response = chain.proceed(chain.request())
+-                    val body = response.body ?: return@addInterceptor response
+-                    if (body.contentLength() > 1024 * 1024) { response.close(); throw java.io.IOException("Metadata too large") }
+-                    val limited = object : ForwardingSource(body.source()) {
+-                        var count = 0L
+-                        override fun read(sink: okio.Buffer, byteCount: Long): Long {
+-                            val read = super.read(sink, minOf(byteCount, 8192))
+-                            if (read > 0) count += read
+-                            if (count > 1024 * 1024) throw java.io.IOException("Metadata too large")
+-                            return read
+-                        }
+-                    }.buffer()
+-                    response.newBuilder().body(object : ResponseBody() {
+-                        override fun contentType() = body.contentType()
+-                        override fun contentLength() = body.contentLength()
+-                        override fun source() = limited
+-                    }).build()
+-                }.connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
+-            val coverHttp = httpProvider().newBuilder().cookieJar(okhttp3.CookieJar.NO_COOKIES)
+-                .connectTimeout(3, TimeUnit.SECONDS).readTimeout(4, TimeUnit.SECONDS)
+-                .callTimeout(6, TimeUnit.SECONDS).connectionPool(ConnectionPool(1, 30, TimeUnit.SECONDS)).build()
+-            val created = Session(http, ContentRepository(http), active, PhoneCoverLoader(coverHttp))
+-            try {
+-                created.server = PhoneControlServer(selected) { body -> request(created, body) }
+-                main.post {
+-                    if (ticket != generation || !foreground) { created.close(); return@post }
+-                    starting = false
+-                    session = created
+-                    if (show) tools.phoneConsole(created.server.url, anchor, ::disconnect)
+-                }
+-            } catch (_: Exception) {
+-                created.close()
+-                main.post {
+-                    if (ticket == generation) {
+-                        starting = false
+-                        if (show) tools.info("手机控制台", "无法开启连接，请检查局域网后重试。", anchor)
+-                    }
+-                }
+-            }
+-        }, "hongguotv-phone-start").apply { isDaemon = true; start() }
+-    }
+-
+-    private fun <T> onMain(current: Session, action: () -> T): T {
+-        val task = FutureTask {
+-            check(current.active.get() && session === current && foreground) { "Session closed" }
+-            action()
+-        }
+-        main.post(task)
+-        return try { task.get(2, TimeUnit.SECONDS) }
+-        finally { task.cancel(false); main.removeCallbacks(task) }
+-    }
+-
+-    private fun request(current: Session, body: JSONObject): JSONObject {
+-        val action = body.getString("action")
+-        if (action != "status" && !current.allowCommand()) return JSONObject().put("error", "操作过快，请稍候再试")
+-        if (action == "cover") {
+-            require(!body.has("url"))
+-            if (!current.readingCover.compareAndSet(false, true)) return JSONObject().put("error", "封面读取中，请稍后重试")
+-            try {
+-                val id = body.getString("id")
+-                val scope = body.getInt("scope")
+-                val url = onMain(current) { catalog.cover(id, scope) }
+-                val image = current.covers.load(url)
+-                return onMain(current) {
+-                    check(catalog.cover(id, scope) == url)
+-                    JSONObject().put("image", image)
+-                }
+-            } finally { current.readingCover.set(false) }
+-        }
+-        if (action in setOf("loginQr", "loginSend", "loginVerify", "loginPoll")) return login(current, body)
+-        if (action in setOf("search", "related", "suggest", "discover")) {
+-            val reading = if (action == "suggest") current.suggesting else current.browsing
+-            if (!reading.compareAndSet(false, true)) return JSONObject().put("error", "正在读取，请稍候再试")
+-            try {
+-                val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
+-                if (action == "suggest") {
+-                    val query = body.getString("query").trim()
+-                    require(query.length in 1..80 && query.none { it.isISOControl() })
+-                    return JSONObject().put("items", JSONArray(current.repository.searchSuggestions(query).take(8).map { it.take(100) }))
+-                }
+-                if (action == "discover") {
+-                    val raw = body.optJSONObject("filters") ?: JSONObject()
+-                    val selection = DiscoverySelection(raw.keys().asSequence().associateWith { raw.getString(it) })
+-                    val cursor = body.optJSONObject("cursor")?.let {
+-                        DiscoveryCursor(it.getInt("offset"), it.getString("session"), it.getInt("page"))
+-                    }
+-                    val result = current.repository.filteredDiscovery(selection, cursor)
+-                    return onMain(current) {
+-                        check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
+-                        catalog.result(result.items.map { RelatedWork(it, "", false) }, result.next != null)
+-                            .put("groups", JSONArray(result.groups.map { group ->
+-                                JSONObject().put("type", group.type).put("label", group.label)
+-                                    .put("options", JSONArray(group.options.map { JSONObject().put("id", it.id).put("label", it.label) }))
+-                            })).put("cursor", result.next?.let { JSONObject().put("offset", it.offset).put("session", it.session).put("page", it.page) })
+-                    }
+-                }
+-                if (action == "related") {
+-                    val series = onMain(current) { catalog.series(body.getString("id")) }
+-                    val rows = current.repository.related(series.id).take(40)
+-                    return onMain(current) {
+-                        check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
+-                        catalog.result(rows)
+-                    }
+-                }
+-                val query = body.getString("query").trim()
+-                val page = body.optInt("page", 1)
+-                require(query.length in 1..80 && query.none { it.isISOControl() } && page in 1..100)
+-                val result = current.repository.searchAll(query, page)
+-                return onMain(current) {
+-                    check(scope == control(JSONObject().put("action", "status")).getInt("scope"))
+-                    if (body.optBoolean("sync")) showSearch(query, page, result)
+-                    catalog.result(result.items.map { RelatedWork(it, "", false) }, result.hasMore)
+-                }
+-            } finally { reading.set(false) }
+-        }
+-        return onMain(current) {
+-            when (action) {
+-                "list" -> catalog.list(body)
+-                "play", "favorite", "reserve" -> catalog.act(body)
+-                "disconnect" -> { main.postDelayed({ if (session === current) disconnect() }, 200); JSONObject().put("message", "正在断开") }
+-                else -> { catalog.checkScope(); control(body) }
+-            }
+-        }
+-    }
+-    private fun login(current: Session, body: JSONObject): JSONObject {
+-        if (!current.authenticating.compareAndSet(false, true)) return JSONObject().put("error", "登录处理中，请稍候")
+-        try {
+-            val action = body.getString("action")
+-            val scope = onMain(current) { control(JSONObject().put("action", "status")).getInt("scope") }
+-            val now = android.os.SystemClock.elapsedRealtime()
+-            if (current.login != null && current.loginScope != scope) {
+-                current.login?.cancel(); current.login = null; current.qrExpiresAt = 0
+-            }
+-            if (action == "loginQr" || action == "loginSend") {
+-                if (action == "loginSend" && now < current.resendAt)
+-                    return JSONObject().put("error", "请等待倒计时结束再获取验证码")
+-                val login = current.login ?: WebLogin(current.http).also { current.login = it; current.loginScope = scope }
+-                check(current.loginScope == scope) { "账户已变化，请重新连接" }
+-                if (action == "loginQr") {
+-                    val qr = login.qr()
+-                    require(qr.image.size <= 128 * 1024)
+-                    current.qrExpiresAt = android.os.SystemClock.elapsedRealtime() + qr.expiresIn * 1000L
+-                    return JSONObject().put("image", "data:image/png;base64," + android.util.Base64.encodeToString(qr.image, android.util.Base64.NO_WRAP))
+-                        .put("expiresIn", qr.expiresIn).put("appUrl", qr.appUrl)
+-                }
+-                val mobile = PhoneLogin.parse(body.getString("mobile").also { require(it.length <= 32) })
+-                current.qrExpiresAt = 0
+-                current.resendAt = now + 60000
+-                val sent = login.send(mobile)
+-                val seconds = sent.retrySeconds.coerceIn(60, 300)
+-                current.resendAt = android.os.SystemClock.elapsedRealtime() + seconds * 1000L
+-                return JSONObject().put("retrySeconds", seconds).put("message", "验证码已发送")
+-            }
+-            val login = current.login ?: return JSONObject().put("error", "请先获取验证码或二维码")
+-            check(current.loginScope == scope) { "账户已变化，请重新连接" }
+-            val credentials = when (action) {
+-                "loginVerify" -> login.verify(body.getString("code").also { require(it.matches(Regex("[0-9]{4,8}"))) })
+-                "loginPoll" -> {
+-                    if (current.qrExpiresAt == 0L) return JSONObject().put("error", "请先获取授权链接")
+-                    if (now < current.pollAt) return JSONObject().put("pending", true)
+-                    current.pollAt = now + 2000
+-                    if (!login.poll()) return if (now >= current.qrExpiresAt) JSONObject().put("error", "授权已过期，请重新获取") else JSONObject().put("pending", true)
+-                    login.credentials()
+-                }
+-                else -> throw IllegalArgumentException("Unknown login action")
+-            }
+-            onMain(current) { catalog.login(credentials, scope) }
+-            current.login = null
+-            return JSONObject().put("submitted", true).put("message", "验证成功，正在同步到电视…")
+-        } catch (e: PhoneLogin.Failure) {
+-            return JSONObject().put("error", e.message ?: "红果验证失败")
+-        } finally { current.authenticating.set(false) }
+-    }
+-
+-}
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneControlCatalog.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneControlCatalog.kt
+deleted file mode 100644
+index e2589b0..0000000
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneControlCatalog.kt
++++ /dev/null
+@@ -1,171 +0,0 @@
+-// SPDX-License-Identifier: GPL-3.0-only
+-package com.hongguotv.nativeapp
+-
+-import com.hongguotv.core.*
+-import org.json.JSONArray
+-import org.json.JSONObject
+-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+-
+-/** Main-thread snapshots. Retain at most 80 small cards, never bitmaps or complete result pages. */
+-internal class PhoneControlCatalog(
+-    private val library: Library,
+-    private val account: AccountController,
+-    private val play: (Series, CloudProgress?) -> Unit,
+-) {
+-    private data class Entry(val series: Series, val upcoming: Boolean, val reservable: Boolean, val artwork: String)
+-    private val entries = linkedMapOf<String, Entry>()
+-    private var scope = account.historyScope
+-    var message = ""
+-        private set
+-    var revision = 0
+-        private set
+-    private var mutationPending = false
+-    private var reservationId: String? = null
+-    private var favoriteId: String? = null
+-
+-    fun login(credentials: AccountCredentials, scope: Int) = account.acceptConsoleLogin(credentials, scope)
+-
+-    fun clear() { entries.clear(); message = ""; mutationPending = false; reservationId = null; favoriteId = null }
+-
+-    fun favoriteStatus(): JSONObject? {
+-        val id = favoriteId ?: return null
+-        return JSONObject().put("id", id).put("favorite", account.accountFavorite(id))
+-            .put("pending", account.favoriteNeedsRefresh(id)).put("loading", account.favoriteState().loading)
+-    }
+-
+-    fun reservationStatus(): JSONObject? {
+-        val id = reservationId ?: return null
+-        val entry = entries[id] ?: return null
+-        return JSONObject().put("id", id).put("label", account.reservationLabel(RelatedWork(entry.series, "", true)))
+-    }
+-
+-    fun checkScope() {
+-        if (scope != account.historyScope) { clear(); scope = account.historyScope }
+-    }
+-
+-    fun series(id: String): Series {
+-        checkScope()
+-        return entries[id]?.series ?: throw IllegalArgumentException("Expired card")
+-    }
+-
+-    private fun safeCover(value: String, secureOnly: Boolean = true): String {
+-        if (value.length > 8192 || value.any { it.isISOControl() }) return ""
+-        val cleaned = value.trim().replace("\\/", "/")
+-            .replace("\\u002F", "/", ignoreCase = true).replace("\\u0026", "&", ignoreCase = true)
+-            .replace("&amp;", "&")
+-        val absolute = if (cleaned.startsWith("//")) "https:$cleaned" else cleaned
+-        val url = absolute.toHttpUrlOrNull() ?: return ""
+-        if (url.username.isNotEmpty() || url.password.isNotEmpty()) return ""
+-        // Match the TV HTTP client's URL encoding, while keeping the phone page HTTPS-only.
+-        val secure = if (secureOnly && url.scheme == "http") url.newBuilder().scheme("https")
+-            .port(if (url.port == 80) 443 else url.port).build() else url
+-        return secure.toString().takeIf { it.length <= 8192 }.orEmpty()
+-    }
+-
+-    fun cover(id: String, expectedScope: Int): String {
+-        checkScope()
+-        require(expectedScope == scope) { "账户已切换" }
+-        return entries[id]?.artwork ?: throw IllegalArgumentException("Expired card")
+-    }
+-
+-    private fun mergedSeries(rows: List<Series>): List<Series> = rows.groupBy { it.id }.values.map { versions ->
+-        val first = versions.first()
+-        first.copy(cover = versions.firstOrNull { safeCover(it.cover).isNotEmpty() }?.cover.orEmpty())
+-    }
+-
+-    fun result(rows: List<RelatedWork>, hasMore: Boolean = false, status: String = ""): JSONObject {
+-        checkScope()
+-        val items = JSONArray()
+-        rows.take(40).forEach { work ->
+-            val source = work.series
+-            val small = Series(source.id.take(64), source.title.take(200), cover = safeCover(source.cover), badge = source.badge.take(120))
+-            entries.remove(small.id)
+-            entries[small.id] = Entry(small, work.upcoming, work.upcoming && small.id.matches(Regex("[0-9]{1,19}")), safeCover(source.cover, secureOnly = false))
+-            while (entries.size > 80) entries.remove(entries.keys.first())
+-            items.put(JSONObject().put("id", small.id).put("title", small.title).put("cover", small.cover).put("badge", work.label + " · " + small.badge)
+-                .put("reservationLabel", if (work.upcoming) account.reservationLabel(work) else "")
+-                .put("favorite", account.accountFavorite(small.id)).put("favoritePending", account.favoriteNeedsRefresh(small.id))
+-                .put("playable", !work.upcoming).put("reservable", entries[small.id]!!.reservable).put("scope", scope))
+-        }
+-        return JSONObject().put("items", items).put("hasMore", hasMore).put("message", status)
+-    }
+-
+-    fun list(body: JSONObject): JSONObject {
+-        checkScope()
+-        val kind = body.getString("kind")
+-        val page = body.optInt("page", 1).also { require(it in 1..100) }
+-        val refresh = body.optBoolean("refresh")
+-        val cloud = kind in setOf("online", "upcoming")
+-        if (cloud && !account.signedIn) return result(emptyList(), status = "请到「账户」登录红果")
+-        var status = ""
+-        var loading = false
+-        val rows = when (kind) {
+-            "favorites" -> {
+-                if (refresh && account.signedIn) account.refreshFavorites()
+-                status = if (account.signedIn) "本机与账户收藏合并显示 · " + account.favoriteState().message
+-                    else "本机收藏 · 登录后在这里合并显示账户收藏"
+-                loading = account.favoriteState().loading
+-                mergedSeries(library.favorites() + account.favoriteState().rows.map { it.series })
+-                    .map { RelatedWork(it, "", false) }
+-            }
+-            "history" -> {
+-                if (refresh && account.signedIn) account.refreshHistory()
+-                status = if (account.signedIn) "按最近观看排序 · " + account.historyStatus
+-                    else "本机历史 · 登录后在这里合并显示账户历史"
+-                loading = account.signedIn && account.historyLoading
+-                val recent = (library.history().map { it.series to it.updatedAt } +
+-                    account.historyRows().map { it.series to it.updatedAt }).sortedByDescending { it.second }
+-                mergedSeries(recent.map { it.first }).map { RelatedWork(it, "", false) }
+-            }
+-            "online", "upcoming" -> {
+-                if (refresh) account.refreshReservations()
+-                val state = account.reservationState(kind == "online")
+-                loading = state.loading
+-                status = state.message + "；每类仅显示当前读取的最近 20 部"
+-                state.rows.map { RelatedWork(it.series, "", !it.online) }
+-            }
+-            "localFavorites" -> library.favorites().map { RelatedWork(it, "", false) }
+-            "localHistory" -> library.history().map { RelatedWork(it.series, "", false) }
+-            "later" -> library.later().map { RelatedWork(it, "", false) }
+-            else -> throw IllegalArgumentException("Unknown list")
+-        }
+-        return result(rows.drop((page - 1) * 20).take(20), rows.size > page * 20, status).put("loading", loading)
+-    }
+-
+-    fun act(body: JSONObject): JSONObject {
+-        checkScope()
+-        val action = body.getString("action")
+-        if (body.getInt("scope") != scope) return JSONObject().put("error", "账户已切换，请重新读取列表")
+-        val entry = entries[body.getString("id")] ?: return JSONObject().put("error", "列表已过期，请重新读取")
+-        when (action) {
+-            "play" -> {
+-                require(!entry.upcoming)
+-                val progress = if (body.optString("source") == "history" && account.signedIn)
+-                    account.progress(entry.series.id)?.takeIf { cloud ->
+-                        val local = library.progress(entry.series.id)
+-                        local == null || cloud.updatedAt > local.updatedAt
+-                    } else null
+-                play(entry.series, progress)
+-                return JSONObject().put("message", "已发送到电视，正在准备播放")
+-            }
+-            "favorite", "reserve" -> {
+-                if (!account.signedIn) return JSONObject().put("error", "请先到「账户」登录")
+-                if (mutationPending || account.historyLoading) return JSONObject().put("error", "账户操作进行中，请稍候")
+-                if (action == "reserve") { require(entry.reservable); reservationId = entry.series.id }
+-                else { require(!entry.upcoming); favoriteId = entry.series.id }
+-                mutationPending = true
+-                val ticket = scope
+-                val done: (String) -> Unit = { text ->
+-                    if (ticket == account.historyScope) { mutationPending = false; message = text; revision++ }
+-                }
+-                message = "正在提交账户操作…"
+-                try {
+-                    if (action == "reserve") account.reserve(RelatedWork(entry.series, "", true), done)
+-                    else account.changeFavorite(entry.series, body.getBoolean("add"), done)
+-                } catch (e: Exception) { mutationPending = false; throw e }
+-                return JSONObject().put("message", message)
+-            }
+-            else -> throw IllegalArgumentException("Unknown action")
+-        }
+-    }
+-}
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneCoverLoader.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneCoverLoader.kt
+deleted file mode 100644
+index 35b1e1e..0000000
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/PhoneCoverLoader.kt
++++ /dev/null
+@@ -1,62 +0,0 @@
+-// SPDX-License-Identifier: GPL-3.0-only
+-package com.hongguotv.nativeapp
+-
+-import android.graphics.Bitmap
+-import android.graphics.BitmapFactory
+-import android.util.Base64
+-import java.io.ByteArrayOutputStream
+-import okhttp3.OkHttpClient
+-import okhttp3.Request
+-
+-/** Session-local thumbnails, read on a phone worker, never on the television UI thread. */
+-internal class PhoneCoverLoader(private val http: OkHttpClient) {
+-    @Volatile private var closed = false
+-    private val cache = linkedMapOf<String, String>()
+-
+-    fun load(url: String): String {
+-        check(!closed)
+-        if (url.isBlank()) return ""
+-        synchronized(cache) { cache[url] }?.let { return it }
+-        val bytes = http.newCall(Request.Builder().url(url).build()).execute().use { response ->
+-            check(response.isSuccessful) { "封面读取失败" }
+-            val body = response.body ?: error("封面为空")
+-            require(body.contentLength() <= 4 * 1024 * 1024) { "封面过大" }
+-            val out = ByteArrayOutputStream()
+-            val buffer = ByteArray(8192)
+-            body.byteStream().use { input ->
+-                while (true) {
+-                    val n = input.read(buffer)
+-                    if (n < 0) break
+-                    require(out.size() + n <= 4 * 1024 * 1024) { "封面过大" }
+-                    out.write(buffer, 0, n)
+-                }
+-            }
+-            out.toByteArray()
+-        }
+-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+-        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "封面格式无法识别" }
+-        var sample = 1
+-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 480) sample *= 2
+-        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+-            BitmapFactory.Options().apply { inSampleSize = sample }) ?: error("封面解码失败")
+-        val out = ByteArrayOutputStream()
+-        try { check(decoded.compress(Bitmap.CompressFormat.JPEG, 80, out)) }
+-        finally { decoded.recycle() }
+-        require(out.size() <= 160 * 1024) { "缩略图过大" }
+-        val image = "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+-        synchronized(cache) {
+-            check(!closed)
+-            cache[url] = image
+-            while (cache.size > 16) cache.remove(cache.keys.first())
+-        }
+-        return image
+-    }
+-
+-    fun close() {
+-        closed = true
+-        http.dispatcher.cancelAll()
+-        http.connectionPool.evictAll()
+-        synchronized(cache) { cache.clear() }
+-    }
+-}
+diff --git a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
+index f8d62a2..c2d3a88 100644
+--- a/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
++++ b/kotlin-tv/app/src/main/kotlin/com/hongguotv/nativeapp/TvTools.kt
+@@ -82,12 +82,6 @@ class TvTools(private val activity: Activity) {
+         next.window?.setDimAmount(.6f)
+     }
+ 
+-    internal fun dispatchPhoneKey(event: android.view.KeyEvent): Boolean {
+-        val modal = dialog?.takeIf { it.isShowing } ?: return false
+-        modal.dispatchKeyEvent(event)
+-        return true
+-    }
+-
+     fun close() {
+         dialog?.dismiss()
+         phone?.close()
+@@ -159,7 +153,7 @@ class TvTools(private val activity: Activity) {
+                 tag = "choice-${choices.size}"
+                 gravity = Gravity.CENTER_VERTICAL
+                 isFocusable = true
+-                isFocusableInTouchMode = true
++                isFocusableInTouchMode = false
+                 isClickable = true
+                 minimumHeight = dp(48)
+                 setPadding(dp(14), dp(10), dp(14), dp(10))
+@@ -408,18 +402,6 @@ class TvTools(private val activity: Activity) {
+             contentDescription = "二维码"
+         }
+ 
+-    fun phoneConsole(url: String, anchor: View?, disconnect: () -> Unit) {
+-        val content = column()
+-        val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
+-        row.addView(qr(url), LinearLayout.LayoutParams(dp(185), dp(185)))
+-        row.addView(label("手机与电视连接同一局域网，扫码后用浏览器打开。\n可以搜索剧名、遥控播放、管理片单。\n关闭此窗口后仍可控制，播放中也能使用。\n电视退出应用后连接失效；请勿分享二维码。", 16f), LinearLayout.LayoutParams(0, -2, 1f))
+-        content.addView(row)
+-        content.addView(label(url, 12f))
+-        open(AlertDialog.Builder(activity).setTitle("手机扫码控制")
+-            .setView(content).setPositiveButton("继续看电视", null)
+-            .setNegativeButton("断开所有手机") { _, _ -> disconnect() }.create(), anchor)
+-    }
+-
+     fun phoneInput(
+         anchor: View?,
+         inputTitle: String = "手机输入剧名",
+diff --git a/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CatalogShellTest.kt b/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CatalogShellTest.kt
+index 9c3826f..56b4e6c 100644
+--- a/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CatalogShellTest.kt
++++ b/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CatalogShellTest.kt
+@@ -57,26 +57,6 @@ class CatalogShellTest {
+         } finally { controller.pause().stop().destroy() }
+     }
+ 
+-    @Test fun scanAboveSettingsOpensPhoneControlWithoutChangingSelectedPage() {
+-        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+-        var anchor: android.view.View? = null
+-        var navigated = -1
+-        val shell = CatalogShell(controller.get(), phone = { anchor = it }) { navigated = it }
+-        try {
+-            controller.get().setContentView(shell)
+-            shell.select(7)
+-            shell.navigation[6].requestFocus()
+-            shell.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_UP))
+-            val scan = shell.findFocus() as TextView
+-            assertEquals("扫码", scan.text.toString())
+-            scan.performClick()
+-            assertSame(scan, anchor)
+-            assertEquals(-1, navigated)
+-            assertTrue(shell.navigation[7].isSelected)
+-            shell.dispatchKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_DPAD_DOWN))
+-            assertTrue(shell.navigation[6].hasFocus())
+-        } finally { controller.pause().stop().destroy() }
+-    }
+ 
+     @Test fun switchingBodyPreservesNavigationIdentityFocusAndSharedSelectionStyle() {
+         val activity = Robolectric.buildActivity(Activity::class.java).setup()
+diff --git a/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt b/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt
+index eeba6ca..52d7156 100644
+--- a/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt
++++ b/kotlin-tv/app/src/test/kotlin/com/hongguotv/nativeapp/CloudResumePlaybackTest.kt
+@@ -93,10 +93,9 @@ class CloudResumePlaybackTest {
+                 CloudProgress::class.java,
+                 Boolean::class.javaPrimitiveType,
+                 Boolean::class.javaPrimitiveType,
+-                Boolean::class.javaPrimitiveType,
+             )
+             .apply { isAccessible = true }
+-            .invoke(activity, series, resume, true, remote, false, fromHome, false)
++            .invoke(activity, series, resume, true, remote, false, fromHome)
+         (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+         ShadowLooper.idleMainLooper()
+     }
+@@ -121,32 +120,6 @@ class CloudResumePlaybackTest {
+         }
+ 
+ 
+-    @Test
+-    fun phonePushBackOpensCurrentDetailDuringLoadingAndWithEitherHudState() {
+-        for (waiting in listOf(true, false)) for (visible in listOf(true, false)) {
+-            fixture { activity, _, account ->
+-                val catalog = MainActivity::class.java.getDeclaredMethod("getPhoneCatalog")
+-                    .apply { isAccessible = true }.invoke(activity) as PhoneControlCatalog
+-                catalog.result(listOf(RelatedWork(series, "", false)))
+-                catalog.act(org.json.JSONObject().put("action", "play").put("id", series.id)
+-                    .put("scope", account.historyScope).put("source", "history"))
+-                (get(activity, "workJob") as? Future<*>)?.get(5, TimeUnit.SECONDS)
+-                ShadowLooper.idleMainLooper()
+-                assertPlayback(activity, 2, 45000)
+-                assertEquals(true, get(activity, "phonePlayback"))
+-                set(activity, "waitingForFirstFrame", waiting)
+-                (get(activity, "hud") as View).visibility = if (visible) View.VISIBLE else View.GONE
+-                MainActivity::class.java.getDeclaredMethod("goBack").apply { isAccessible = true }.invoke(activity)
+-                assertEquals("detail", get(activity, "screen"))
+-                assertEquals(series.id, (get(activity, "detail") as Detail).series.id)
+-                assertEquals(2, get(activity, "episodeIndex"))
+-                assertEquals(false, get(activity, "phonePlayback"))
+-                assertEquals(false, get(activity, "directPlayback"))
+-                assertTrue(texts(activity.findViewById(android.R.id.content)).any { it.contentDescription == "第 3 集" })
+-            }
+-        }
+-    }
+-
+     @Test
+     fun cloudHistoryUsesItsEpisodeNumberAndPositionEvenWhenIdsDiffer() =
+         fixture { activity, library, _ ->
+diff --git a/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt b/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt
+deleted file mode 100644
+index 4cbb714..0000000
+--- a/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlPage.kt
++++ /dev/null
+@@ -1,249 +0,0 @@
+-// SPDX-License-Identifier: GPL-3.0-only
+-package com.hongguotv.core
+-
+-/** All rendering stays on the phone. Artwork thumbnails arrive through the TV session; no remote image requests or video on the phone. */
+-internal object PhoneControlPage {
+-    fun html(nonce: String) = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>hongguoTV · 手机控制台</title>
+-<style>
+-*{box-sizing:border-box}body{margin:0;background:#203044;color:#f5f5f7;font:16px system-ui,sans-serif}main{max-width:700px;margin:auto;padding:20px 18px 40px}h1{font-size:23px;margin:6px 0}h2{font-size:21px}h3{font-size:17px}button,input,select,a.action{font:inherit;border-radius:10px;padding:11px 13px;border:1px solid #475063;background:#30435a;color:inherit;min-height:44px}button{cursor:pointer}button:disabled{opacity:.45}button.primary,a.action.primary{background:#e95342;border-color:#e95342}a.action{display:inline-block;text-decoration:none}a{color:#ffad9b}[hidden]{display:none!important}.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:12px 0}input[type=search],input[type=tel],input.code{flex:1;min-width:0;width:100%}.searchbox{display:flex;gap:8px;margin:18px 0 8px}.card{background:#2c3e54;border:1px solid #465b76;border-radius:14px;padding:16px;margin:12px 0}.muted{color:#acb8ca;font-size:14px;line-height:1.6}#notice{color:#ffd0a0;margin:8px 0;line-height:1.5}#notice:empty{display:none}#rows h3{margin:0 0 8px}label{display:inline-flex;align-items:center;gap:6px}input[type=number]{width:84px}.tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;position:sticky;top:0;background:#203044;padding:14px 0;z-index:2}.tabs button{border-color:transparent;background:none}.tabs button[aria-selected=true],.library-tabs button[aria-selected=true],button[aria-pressed=true]{background:#392822;border-color:#df735b;color:#ffb19d}.subtabs{display:flex;gap:8px;margin:12px 0}.subtabs button{flex:1}.chips{display:flex;flex-wrap:wrap;gap:8px;padding:4px 0 8px}.chips button{white-space:normal;max-width:100%;overflow-wrap:anywhere;font-size:14px;padding:8px 13px;flex-shrink:0}.filter h3{font-size:14px;margin:8px 0 2px;color:#acb8ca}.suggestions{display:grid;gap:4px}.suggestions button{text-align:left;background:#2c3e54;border-color:transparent}summary{cursor:pointer;padding:12px 0;min-height:44px}#qrImage{width:220px;max-width:100%;background:white;padding:8px;border-radius:12px}.library-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.library-tabs button{padding:10px 4px}.filter{background:#2c3e54;border:1px solid #465b76;border-radius:12px;padding:6px 12px;margin:10px 0}.filter summary{font-size:14px;color:#acb8ca}.filter-more{margin:4px 0 8px;color:#ffb19d}.series-head{display:flex;gap:14px;align-items:flex-start}.series-info{min-width:0;overflow-wrap:anywhere}.poster{flex:0 0 84px;width:84px;height:112px;border-radius:8px;overflow:hidden;background:#203044;display:flex;align-items:center;justify-content:center;color:#acb8ca;font-size:13px}.poster img{width:100%;height:100%;object-fit:cover}.series-info h3{margin:0 0 8px}.series-info p{margin:0}.playback-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}small{display:block}header .muted{margin:4px 0}.empty{padding:20px 0;color:#acb8ca}#loginPanel input{margin:5px 0}#loginNote{min-height:22px;line-height:1.5;color:#ffd0a0}
+-</style></head>
+-<body><main><header><!-- brand:start --><h1 style="display:flex;align-items:center;gap:10px"><img width="48" height="40" style="object-fit:contain;image-rendering:pixelated" src="data:image/png;base64,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" alt=""/>hongguoTV</h1><!-- brand:end --><p class="muted" id="connection">正在连接电视…</p></header>
+-<nav class="tabs" role="tablist" aria-label="主要功能"><button id="tab-browse" role="tab" aria-controls="panel-browse" data-tab="browse" aria-selected="true">找剧</button><button id="tab-player" role="tab" aria-controls="panel-player" data-tab="player" aria-selected="false">播放</button><button id="tab-library" role="tab" aria-controls="panel-library" data-tab="library" aria-selected="false">片单</button><button id="tab-account" role="tab" aria-controls="panel-account" data-tab="account" aria-selected="false">账户</button></nav>
+-<p id="notice" role="status" aria-live="polite"></p>
+-<section id="panel-browse" role="tabpanel" aria-labelledby="tab-browse">
+-<div class="searchbox"><input id="query" type="search" maxlength="80" autocomplete="off" placeholder="搜剧名、演员" aria-label="搜索剧名或演员" aria-controls="suggestions"><button class="primary" id="search">搜索</button></div>
+-<div id="suggestions" class="suggestions" aria-label="搜索联想" hidden></div>
+-<div class="subtabs"><button id="searchMode" aria-pressed="true">搜索</button><button id="discoverMode" aria-pressed="false">按标签找剧</button></div>
+-<div id="filters" hidden></div><div id="browseHost"></div>
+-</section>
+-<section id="panel-player" role="tabpanel" aria-labelledby="tab-player" hidden>
+-<h2 id="playing">电视未在剧集播放页</h2><p id="position" class="muted"></p>
+-<div class="playback-grid"><button data-cmd="previous">上一集</button><button class="primary" id="togglePlay">暂停</button><button data-cmd="next">下一集</button></div>
+-<div class="row"><button data-cmd="backward">−15 秒</button><button data-cmd="forward">+15 秒</button></div>
+-<div class="card"><div class="row"><label>倍速<select id="speed"><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>1.75</option><option>2</option><option>3</option></select></label><label>清晰度<select id="quality"><option>480</option><option>720</option><option selected>1080</option></select></label></div><div class="row"><label>第<input id="episode" type="number" min="1" value="1">集</label><button id="jump">播放此集</button></div></div>
+-<p class="muted">在「找剧」或「片单」选一部剧，即可在电视播放。</p></section>
+-<section id="panel-library" role="tabpanel" aria-labelledby="tab-library" hidden>
+-<h2>我的片单</h2><nav class="library-tabs" role="tablist" aria-label="片单分类"><button id="library-favorites" role="tab" aria-controls="libraryHost" data-library="favorites" aria-selected="true">收藏</button><button id="library-history" role="tab" aria-controls="libraryHost" data-library="history" aria-selected="false">历史</button><button id="library-online" role="tab" aria-controls="libraryHost" data-library="online" aria-selected="false">预约</button><button id="library-later" role="tab" aria-controls="libraryHost" data-library="later" aria-selected="false">稍后看</button></nav>
+-<div id="loginGate" class="card" hidden><p>登录红果后，在这里查看已上线的预约。</p><button id="goLogin" class="primary">在手机登录</button></div><div id="libraryHost" role="tabpanel" aria-labelledby="library-favorites"></div></section>
+-<section id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden><h2>红果账户</h2><p id="accountLabel"></p><p id="accountStatus" class="muted"></p>
+-<div id="loginPanel" class="card"><h3>在手机登录，同步到电视</h3><button id="prepareApp" class="primary">红果 App 授权登录</button><p><a id="openApp" class="action primary" hidden rel="noreferrer">打开红果 App 授权</a></p><p id="appHint" class="muted">手机红果 App 需先登录。授权后返回此页，电视自动登录。</p><details id="smsDetails"><summary>手机号验证码登录</summary><p class="muted">使用红果手机号验证，成功后这台电视自动登录。</p><label for="mobile">手机号（支持 +国家码）</label><input id="mobile" type="tel" autocomplete="tel" maxlength="32" placeholder="请输入手机号"><div class="row"><button id="sendCode">获取验证码</button></div><label for="code">短信验证码</label><input id="code" class="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="请输入验证码"><button id="verifyCode" class="primary">登录并同步到电视</button>
+-</details><p id="loginNote" role="status"></p><details id="qrDetails"><summary>改用红果 App 扫码授权</summary><p class="muted">用红果 App「我的 → 扫一扫」扫描此码；同一手机可尝试从相册识别。授权后返回本页，电视会自动同步。</p><button id="getQr">显示授权二维码</button><div id="qrBox" hidden><p><img id="qrImage" alt="红果登录授权二维码"></p><p id="qrNote" class="muted"></p></div></details></div>
+-<button id="switchAccount" hidden>换个账户登录</button><details><summary>连接设置</summary><p class="muted">同一局域网可用。电视退出应用后连接失效，需要重新扫码。</p><button id="disconnect">断开所有手机</button></details></section>
+-<div id="listArea"><div class="row"><button id="backList" hidden>返回原列表</button><button id="refresh">刷新列表</button><span id="page" class="muted"></span><button id="retry" hidden>重试</button></div><div id="rows"></div><div class="row" id="pagination"><button id="prev">上一页</button><button id="next">下一页</button></div></div>
+-<script nonce="$nonce">
+-(function () {
+-'use strict';
+-var tab='browse', browseMode='search', mode='search', page=1, keyword='', busy=false, commandBusy=false, stopped=false, polling=false;
+-var timer,listTimer,view=0,lastData=null,shownContext=null,returnList=null,related=false;
+-var revision=null,accountScope=null,refreshNeeded=false,accountChanged=false,retryAction=null,signedIn=false,playing=false;
+-var libraryKind='favorites',filterOpen={},filterLimits={},filterBatch=8;
+-var selection={},cursors=[null],groups=[],suggestTimer,suggestVersion=0,suggestPending=false;
+-var loginBusy=false,qrPending=false,qrDeadline=0,qrTimer,qrPolling=false,resendAt=0,countdown,loginSubmitted=false,changingAccount=false,submittedScope=null;
+-var by=function(id){return document.getElementById(id)};
+-function note(text){by('notice').textContent=text||''}
+-function api(data){
+-  var controller=typeof AbortController==='undefined'?null:new AbortController();
+-  var timeout=controller?setTimeout(function(){controller.abort()},25000):null;
+-  return fetch(location.pathname+'/api',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Request':'1'},body:JSON.stringify(data),cache:'no-store',signal:controller?controller.signal:undefined})
+-    .then(function(r){return r.json().then(function(v){if(!r.ok||v.error)throw Error(v.error||'请求未完成');return v})})
+-    .then(function(v){clearTimeout(timeout);return v},function(e){clearTimeout(timeout);throw Error(e.name==='AbortError'?'连接超时，请重试':e.message)});
+-}
+-function button(text,action){
+-  var b=document.createElement('button');b.textContent=text;
+-  b.onclick=function(){if(busy)return;busy=true;b.disabled=true;
+-    Promise.resolve().then(action).catch(function(e){note(e.message)}).then(function(){
+-      busy=false;b.disabled=b.getAttribute('data-pending')==='true';
+-    });
+-  };return b;
+-}
+-function command(action,extra){return api(Object.assign({action:action},extra||{})).then(function(v){note(v.message);return v})}
+-function nav(){
+- by('searchMode').setAttribute('aria-pressed',String(browseMode==='search'));by('discoverMode').setAttribute('aria-pressed',String(browseMode==='discover'));
+- by('filters').hidden=tab!=='browse'||browseMode!=='discover';
+-}
+-function cloudList(){return mode==='online'}
+-function gate(){var gated=tab==='library'&&cloudList()&&!signedIn;by('loginGate').hidden=!gated;by('listArea').hidden=gated;return gated}
+-function changeTab(next){
+- tab=next;Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'),function(b){var selected=b.getAttribute('data-tab')===tab;b.setAttribute('aria-selected',String(selected));by('panel-'+b.getAttribute('data-tab')).hidden=!selected});
+- clearTimeout(listTimer);clearTimeout(qrTimer);hideSuggestions();note('');
+- if(tab==='browse'||tab==='library'){
+-  by(tab==='browse'?'browseHost':'libraryHost').appendChild(by('listArea'));
+-  var nextMode=tab==='browse'?browseMode:libraryKind;
+-  if(mode!==nextMode){view++;mode=nextMode;page=1;related=false;returnList=null;shownContext=null;render({items:[]});}
+-  nav();if(!gate()&&!related){if(mode!=='search'||keyword)load(true);else emptySearch()}
+- }else{by('listArea').hidden=true;if(tab==='account'){if(!signedIn&&!qrPending&&!loginBusy&&!loginSubmitted)prepareQr(false);else pollQr()}}
+-}
+-function emptySearch(){by('rows').textContent='输入剧名，或切换到「按标签找剧」。';by('rows').className='empty';by('pagination').hidden=true;by('page').textContent='';by('refresh').hidden=true}
+-function hideSuggestions(){clearTimeout(suggestTimer);suggestVersion++;by('suggestions').hidden=true;by('suggestions').textContent=''}
+-function searchFor(value){if(!value.trim())return;hideSuggestions();keyword=value.trim();by('query').value=keyword;browseMode='search';mode='search';page=1;nav();load(false)}
+-function suggest(){
+- var value=by('query').value.trim(),token=++suggestVersion;if(!value||tab!=='browse'){hideSuggestions();return}
+- if(suggestPending){suggestTimer=setTimeout(suggest,350);return}suggestPending=true;
+- api({action:'suggest',query:value}).then(function(v){if(token!==suggestVersion||tab!=='browse')return;by('suggestions').textContent='';(v.items||[]).slice(0,8).forEach(function(t){var b=document.createElement('button');b.textContent=t;b.onclick=function(){searchFor(t)};by('suggestions').appendChild(b)});by('suggestions').hidden=!by('suggestions').children.length}).catch(function(){}).then(function(){suggestPending=false});
+-}
+-function renderFilters(){
+- by('filters').textContent='';
+- groups.forEach(function(g,index){
+-  var collapsible=index>=2,section=document.createElement(collapsible?'details':'section');section.className='filter';section.setAttribute('data-filter',g.type);
+-  if(collapsible){section.open=filterOpen[g.type]!==false;section.ontoggle=function(){if(document.documentElement.contains(section))filterOpen[g.type]=section.open}}
+-  var title=document.createElement(collapsible?'summary':'h3');
+-  var selected=(g.options||[]).find(function(o){return o.id===selection[g.type]});
+-  title.textContent=g.label+(selected?' · '+selected.label:'');section.appendChild(title);
+-  var row=document.createElement('div');row.className='chips';
+-  var options=[{id:'',label:'全部'}].concat(g.options||[]),selectedIndex=options.findIndex(function(o){return o.id===selection[g.type]});
+-  var limit=Math.max(filterLimits[g.type]||filterBatch,selectedIndex+1);
+-  options.slice(0,limit).forEach(function(o){
+-   var b=document.createElement('button');b.textContent=o.label;b.setAttribute('aria-pressed',String((selection[g.type]||'')===o.id));
+-   b.onclick=function(){if(busy)return;if(g.type==='genre')selection={};if(o.id)selection[g.type]=o.id;else delete selection[g.type];page=1;cursors=[null];load(false)};row.appendChild(b);
+-  });
+-  section.appendChild(row);
+-  if(limit<options.length){var more=document.createElement('button');more.className='filter-more';more.textContent='展示更多';more.setAttribute('aria-label',g.label+'：展示更多');more.onclick=function(){filterLimits[g.type]=limit+filterBatch;renderFilters();var target=Array.prototype.find.call(by('filters').children,function(el){return el.getAttribute('data-filter')===g.type});if(target){var next=target.querySelector('.filter-more')||target.querySelector('.chips button:last-child');if(next)next.focus()}};section.appendChild(more)}
+-  by('filters').appendChild(section);
+- });
+-}
+-
+-var coverQueue=[],coverActive=false,coverObserver=null,coverEpoch=0;
+-function nextCover(){
+- if(coverActive||!coverQueue.length||stopped)return;
+- if(busy||commandBusy){setTimeout(nextCover,150);return}
+- var job=coverQueue.shift();
+- if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster)){nextCover();return}
+- coverActive=true;
+- api({action:'cover',id:job.item.id,scope:job.item.scope}).then(function(v){
+-  if(job.epoch!==coverEpoch||!document.documentElement.contains(job.poster))return;
+-  job.poster.textContent='';
+-  if(!v.image){job.poster.textContent='暂无封面';return}
+-  if(!/^data:image\/jpeg;base64,/.test(v.image))throw Error('封面格式异常');
+-  var image=document.createElement('img');image.alt=job.item.title+' 封面';image.decoding='async';
+-  image.onerror=function(){coverRetry(job)};image.src=v.image;job.poster.appendChild(image);
+- }).catch(function(){if(job.epoch===coverEpoch)coverRetry(job)}).then(function(){coverActive=false;setTimeout(nextCover,120)});
+-}
+-function coverRetry(job){
+- job.poster.textContent='';var retry=document.createElement('button');retry.textContent='重试封面';
+- retry.onclick=function(){job.poster.textContent='加载封面…';coverQueue.push(job);nextCover()};job.poster.appendChild(retry);
+-}
+-function queueCover(item,poster){
+- var job={item:item,poster:poster,epoch:coverEpoch};poster.textContent='加载封面…';
+- if(coverObserver){poster._coverJob=job;coverObserver.observe(poster)}else coverQueue.push(job);
+-}
+-function favoriteLabel(item){return item.favoritePending?'收藏待同步':item.favorite?'取消账户收藏':'加入账户收藏'}
+-function render(data){
+-  coverEpoch++;coverQueue=[];if(coverObserver)coverObserver.disconnect();
+-  coverObserver=typeof IntersectionObserver==='undefined'?null:new IntersectionObserver(function(entries){
+-   entries.forEach(function(entry){if(entry.isIntersecting){coverObserver.unobserve(entry.target);coverQueue.push(entry.target._coverJob)}});nextCover();
+-  },{rootMargin:'120px'});
+-  lastData=data;by('rows').textContent='';by('rows').className='';by('pagination').hidden=false;by('refresh').hidden=false;
+-  var source=related?'related':mode;
+-  (data.items||[]).forEach(function(item){
+-    var card=document.createElement('article');card.className='card';
+-    var head=document.createElement('div');head.className='series-head';
+-    var poster=document.createElement('div');poster.className='poster';poster.textContent='暂无封面';
+-    queueCover(item,poster);
+-    setTimeout(nextCover,0);
+-    head.appendChild(poster);var info=document.createElement('div');info.className='series-info';
+-    var h=document.createElement('h3');h.textContent=item.title;info.appendChild(h);
+-    var p=document.createElement('p');p.className='muted';p.textContent=item.badge||'';info.appendChild(p);head.appendChild(info);card.appendChild(head);
+-    var actions=document.createElement('div');actions.className='row';
+-    if(item.playable!==false){
+-      actions.appendChild(button('电视播放',function(){return command('play',{id:item.id,source:source,scope:item.scope}).then(function(){changeTab('player');poll()})}));
+-      actions.appendChild(button('相关作品',function(){
+-        return api({action:'related',id:item.id}).then(function(v){
+-          clearTimeout(listTimer);view++;
+-          if(!related)returnList={data:lastData,context:shownContext};
+-          related=true;render(v);
+-        });
+-      }));
+-      var favorite=button(favoriteLabel(item),function(){
+-        if(!signedIn){changeTab('account');return}var add=!item.favorite;
+-        if(!add&&!confirm('从账户收藏中移除《'+item.title+'》？'))return;
+-        favorite.textContent='正在更新…';favorite.setAttribute('data-pending','true');
+-        return command('favorite',{id:item.id,add:add,scope:item.scope}).catch(function(e){favorite.textContent=favoriteLabel(item);favorite.setAttribute('data-pending','false');throw e});
+-      });
+-      favorite.setAttribute('data-favorite',item.id);favorite.setAttribute('data-pending',String(!!item.favoritePending));favorite.disabled=!!item.favoritePending;
+-      favorite.update=function(state){item.favorite=state.favorite;item.favoritePending=state.pending;favorite.textContent=favoriteLabel(item);favorite.disabled=!!state.pending||!!state.loading;favorite.setAttribute('data-pending',String(favorite.disabled))};
+-      actions.appendChild(favorite);
+-    }else if(item.reservable){
+-      var reserve=button(item.reservationLabel||'预约',function(){
+-        if(!signedIn){changeTab('account');return}reserve.textContent='预约中…';reserve.setAttribute('data-pending','true');
+-        return command('reserve',{id:item.id,scope:item.scope}).catch(function(e){reserve.textContent='预约';reserve.setAttribute('data-pending','false');throw e});
+-      });
+-      reserve.setAttribute('data-reserve',item.id);reserve.disabled=['已预约','已提交','预约中…'].indexOf(item.reservationLabel)>=0;
+-      reserve.setAttribute('data-pending',String(reserve.disabled));actions.appendChild(reserve);
+-    }
+-    card.appendChild(actions);by('rows').appendChild(card);
+-  });
+-  by('backList').hidden=!related;by('prev').disabled=related||page<=1;by('next').disabled=related||!data.hasMore;
+-  by('page').textContent=related?'相关作品':'第 '+page+' 页';
+-  note(data.message||((data.items||[]).length?'':'暂无记录'));
+-}
+-function context(){return {mode:mode,page:page,keyword:keyword,selection:Object.assign({},selection)}}
+-function restore(c){if(c){mode=c.mode;page=c.page;keyword=c.keyword;selection=c.selection||{};if(mode==='search'||mode==='discover')browseMode=mode;nav();renderFilters()}}
+-function load(refresh){
+-  if(busy){refreshNeeded=true;return}
+-  if(gate())return;
+-  if(mode==='search'&&!keyword){note('请输入剧名');by('query').focus();return}
+-  busy=true;clearTimeout(listTimer);by('retry').hidden=true;
+-  var current=++view, requested=context();note('正在读取…');
+-  api({action:mode==='search'?'search':mode==='discover'?'discover':'list',kind:mode,page:page,query:keyword,refresh:!!refresh,filters:selection,cursor:mode==='discover'?cursors[page-1]:undefined})
+-    .then(function(v){if(current!==view)return;related=false;returnList=null;shownContext=requested;if(mode==='discover'){if(v.groups&&v.groups.length)groups=v.groups;cursors[page]=v.cursor||null;renderFilters()}render(v);
+-      if(v.loading&&!document.hidden)listTimer=setTimeout(function(){if(current===view)load(false)},1500);
+-    }).catch(function(e){
+-      if(current!==view)return;restore(shownContext);retryAction=function(){restore(requested);load(refresh)};
+-      by('retry').hidden=false;note(e.message);
+-    }).then(function(){busy=false});
+-}
+-by('retry').onclick=function(){if(!busy&&retryAction)retryAction()};
+-by('backList').onclick=function(){if(busy||!returnList)return;var previous=returnList;related=false;returnList=null;restore(previous.context);render(previous.data);load(false)};
+-Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'),function(b){b.onclick=function(){changeTab(b.getAttribute('data-tab'))};b.onkeydown=function(e){if(e.key==='ArrowRight'||e.key==='ArrowLeft'){var tabs=Array.prototype.slice.call(document.querySelectorAll('[data-tab]')),i=tabs.indexOf(b);tabs[(i+(e.key==='ArrowRight'?1:3))%4].focus();tabs[(i+(e.key==='ArrowRight'?1:3))%4].click();e.preventDefault()}}});
+-Array.prototype.forEach.call(document.querySelectorAll('[data-library]'),function(b){
+- b.onclick=function(){libraryKind=b.getAttribute('data-library');Array.prototype.forEach.call(document.querySelectorAll('[data-library]'),function(t){t.setAttribute('aria-selected',String(t===b))});by('libraryHost').setAttribute('aria-labelledby',b.id);changeTab('library')};
+- b.onkeydown=function(e){if(e.key==='ArrowRight'||e.key==='ArrowLeft'){var tabs=Array.prototype.slice.call(document.querySelectorAll('[data-library]')),i=tabs.indexOf(b),next=tabs[(i+(e.key==='ArrowRight'?1:3))%4];next.focus();next.click();e.preventDefault()}};
+-});
+-by('goLogin').onclick=function(){changeTab('account')};
+-by('searchMode').onclick=function(){browseMode='search';changeTab('browse')};
+-by('discoverMode').onclick=function(){browseMode='discover';changeTab('browse')};
+-by('search').onclick=function(){searchFor(by('query').value)};
+-by('query').onkeydown=function(e){if(e.key==='Enter')by('search').click();if(e.key==='Escape')hideSuggestions()};
+-by('query').oninput=function(){hideSuggestions();suggestTimer=setTimeout(suggest,350)};
+-by('refresh').onclick=function(){load(true)};
+-by('prev').onclick=function(){if(!busy&&page>1){page--;load(false)}};
+-by('next').onclick=function(){if(!busy){page++;load(false)}};
+-function send(action,extra){if(commandBusy)return;commandBusy=true;command(action,extra).then(function(){if(action==='pause'||action==='resume'){playing=action==='resume';by('togglePlay').textContent=playing?'暂停':'继续'}}).catch(function(e){note(e.message)}).then(function(){commandBusy=false})}
+-Array.prototype.forEach.call(document.querySelectorAll('[data-cmd]'),function(b){b.onclick=function(){send(b.getAttribute('data-cmd'))}});
+-by('togglePlay').onclick=function(){send(playing?'pause':'resume')};
+-by('speed').onchange=function(){send('speed',{value:Number(this.value)})};
+-by('quality').onchange=function(){send('quality',{value:Number(this.value)})};
+-by('jump').onclick=function(){send('episode',{value:Number(by('episode').value)})};
+-
+-by('disconnect').onclick=function(){if(confirm('断开所有手机？重新连接需要在电视上重新打开控制台。'))command('disconnect').then(function(){stopped=true;clearTimeout(timer);clearTimeout(listTimer);clearTimeout(qrTimer);note('已断开，请在电视上重新连接')}).catch(function(){stopped=true;clearTimeout(timer);clearTimeout(listTimer);clearTimeout(qrTimer);note('连接已关闭')})};
+-function loginNote(t){by('loginNote').textContent=t||''}
+-function loginAction(action,extra){if(loginBusy)return Promise.resolve(null);loginBusy=true;by('sendCode').disabled=true;by('verifyCode').disabled=true;by('getQr').disabled=true;by('prepareApp').disabled=true;return api(Object.assign({action:action},extra||{})).then(function(v){loginNote(v.message);return v}).catch(function(e){loginNote(e.message);return null}).then(function(v){loginBusy=false;by('verifyCode').disabled=false;by('getQr').disabled=false;by('prepareApp').disabled=false;updateCountdown();return v})}
+-function updateCountdown(){clearTimeout(countdown);var left=Math.max(0,Math.ceil((resendAt-Date.now())/1000));by('sendCode').textContent=left?left+' 秒后重发':'获取验证码';by('sendCode').disabled=loginBusy||left>0;if(left&&!document.hidden)countdown=setTimeout(updateCountdown,1000)}
+-by('sendCode').onclick=function(){qrPending=false;clearTimeout(qrTimer);by('openApp').hidden=true;by('prepareApp').hidden=false;var mobile=by('mobile').value.trim();if(!mobile){loginNote('请输入手机号');return}loginAction('loginSend',{mobile:mobile}).then(function(v){if(v){resendAt=Date.now()+v.retrySeconds*1000;updateCountdown();by('code').focus()}})};
+-by('verifyCode').onclick=function(){var code=by('code').value.trim();if(!/^[0-9]{4,8}$/.test(code)){loginNote('请输入 4–8 位短信验证码');return}loginAction('loginVerify',{code:code}).then(function(v){if(v&&v.submitted){loginSubmitted=true;submittedScope=accountScope;qrPending=false;by('code').value='';by('mobile').value='';poll()}})};
+-function prepareQr(showImage){qrPending=false;clearTimeout(qrTimer);by('openApp').hidden=true;return loginAction('loginQr').then(function(v){if(!v)return;by('qrImage').src=v.image;by('qrBox').hidden=!showImage;qrDeadline=Date.now()+v.expiresIn*1000;qrPending=true;by('qrNote').textContent='等待红果 App 授权，返回本页后自动同步';if(v.appUrl&&v.appUrl.indexOf('dragon8662://webview?url=')===0){by('openApp').href=v.appUrl;by('openApp').hidden=false;by('prepareApp').hidden=true;by('appHint').textContent='请先确认手机红果 App 已登录，再点击授权。确认后返回此页，电视自动同步。'}else{by('appHint').textContent='暂未取得 App 授权入口，可使用验证码或扫码登录。'}pollQr()})}
+-by('prepareApp').onclick=function(){prepareQr(false)};
+-by('getQr').onclick=function(){prepareQr(true)};
+-by('openApp').onclick=function(e){if(Date.now()>=qrDeadline){e.preventDefault();by('openApp').hidden=true;by('prepareApp').hidden=false;loginNote('授权已过期，请重新发起');return}by('appHint').textContent='在红果 App 确认后返回此页。未能打开时，请用系统浏览器重试，或改用验证码登录。'};
+-function pollQr(){clearTimeout(qrTimer);if(!qrPending||qrPolling||stopped||document.hidden||tab!=='account')return;qrPolling=true;api({action:'loginPoll'}).then(function(v){if(v.pending&&Date.now()>=qrDeadline){qrPending=false;by('openApp').hidden=true;by('prepareApp').hidden=false;loginNote('授权已过期，请重新获取');return}if(v.submitted){qrPending=false;by('openApp').hidden=true;loginSubmitted=true;submittedScope=accountScope;loginNote(v.message);by('qrBox').hidden=true;by('qrImage').removeAttribute('src');poll()}}).catch(function(e){qrPending=false;by('openApp').hidden=true;by('prepareApp').hidden=false;by('qrNote').textContent=e.message;loginNote(e.message)}).then(function(){qrPolling=false;if(qrPending)qrTimer=setTimeout(pollQr,2500)})}
+-by('switchAccount').onclick=function(){changingAccount=true;prepareQr(false);by('loginPanel').hidden=false;by('switchAccount').hidden=true;loginNote('登录后将替换这台电视的当前账户')};
+-function time(ms){var n=Math.floor(Math.max(0,ms)/1000);return Math.floor(n/60)+':'+('0'+n%60).slice(-2)}
+-function poll(){
+-  if(stopped||document.hidden||polling)return;polling=true;
+-  api({action:'status'}).then(function(s){
+-    signedIn=!!s.signedIn;
+-    if(s.reservation)Array.prototype.forEach.call(document.querySelectorAll('[data-reserve]'),function(b){if(b.getAttribute('data-reserve')===s.reservation.id){b.textContent=s.reservation.label;b.disabled=['已预约','已提交','预约中…'].indexOf(s.reservation.label)>=0;b.setAttribute('data-pending',String(b.disabled))}});
+-    if(s.favorite)Array.prototype.forEach.call(document.querySelectorAll('[data-favorite]'),function(b){if(b.getAttribute('data-favorite')===s.favorite.id)b.update(s.favorite)});
+-    if(s.scope!==undefined){if(accountScope!==null&&accountScope!==s.scope){accountChanged=true;view++;page=1;related=false;returnList=null;shownContext=null;render({items:[]});note('账户已切换，正在更新片单…')}accountScope=s.scope}
+-    if(s.catalogRevision!==undefined){if(revision!==null&&revision!==s.catalogRevision)refreshNeeded=true;revision=s.catalogRevision}
+-    if((tab==='browse'||tab==='library')&&!busy&&!related&&(refreshNeeded||accountChanged)&&(mode!=='search'||keyword)){refreshNeeded=false;accountChanged=false;load(false)}
+-    by('playing').textContent=s.title||'电视未在剧集播放页';
+-    by('position').textContent=s.active?('第 '+s.episode+' / '+s.episodes+' 集 · '+time(s.position)+' / '+time(s.duration)+' · '+(s.playing?'播放中':'已暂停 / 准备中')):'选择剧目后点击「电视播放」';
+-    signedIn=!!s.signedIn;playing=!!s.playing;by('togglePlay').textContent=playing?'暂停':'继续';by('connection').textContent=s.active?'电视正在播放 · '+s.title:'已连接电视';by('accountLabel').textContent=s.account||'未登录';by('accountStatus').textContent=s.accountStatus===s.account?'':s.accountStatus||'';if(loginSubmitted&&signedIn&&s.scope!==submittedScope){loginSubmitted=false;changingAccount=false;by('loginPanel').hidden=true;by('switchAccount').hidden=false;loginNote('');note('已登录并同步到电视')}else if(signedIn&&!changingAccount&&!loginSubmitted){by('loginPanel').hidden=true;by('switchAccount').hidden=false}if(!signedIn){by('loginPanel').hidden=false;by('switchAccount').hidden=true}if(tab==='library')gate();
+-    if(!commandBusy){by('speed').value=String(s.speed);by('quality').value=String(s.quality)}
+-  }).catch(function(){by('connection').textContent='连接中断，请检查电视或重新扫码'}).then(function(){polling=false;if(!stopped&&!document.hidden)timer=setTimeout(poll,3000)});
+-}
+-document.addEventListener('visibilitychange',function(){clearTimeout(timer);clearTimeout(listTimer);clearTimeout(qrTimer);clearTimeout(countdown);hideSuggestions();if(!document.hidden){poll();pollQr();updateCountdown();if((tab==='browse'||tab==='library')&&mode!=='search'&&!related)load(false)}});by('browseHost').appendChild(by('listArea'));emptySearch();nav();poll();
+-})();
+-</script></body></html>"""
+-}
+diff --git a/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlServer.kt b/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlServer.kt
+deleted file mode 100644
+index e4470a1..0000000
+--- a/kotlin-tv/core/src/main/kotlin/com/hongguotv/core/PhoneControlServer.kt
++++ /dev/null
+@@ -1,136 +0,0 @@
+-// SPDX-License-Identifier: GPL-3.0-only
+-package com.hongguotv.core
+-
+-import java.io.ByteArrayOutputStream
+-import java.io.Closeable
+-import java.io.IOException
+-import java.net.InetAddress
+-import java.net.ServerSocket
+-import java.net.Socket
+-import java.security.SecureRandom
+-import java.util.Locale
+-import java.util.concurrent.ArrayBlockingQueue
+-import java.util.concurrent.ConcurrentHashMap
+-import java.util.concurrent.ThreadPoolExecutor
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicBoolean
+-import org.json.JSONObject
+-
+-/** Foreground-only LAN control. Two workers, two queued sockets, no retained response cache. */
+-class PhoneControlServer(address: String, private val request: (JSONObject) -> JSONObject) : Closeable {
+-    private val closed = AtomicBoolean()
+-    private val clients = java.util.Collections.newSetFromMap(ConcurrentHashMap<Socket, Boolean>())
+-    private val workers = ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2),
+-        { task -> Thread(task, "hongguotv-phone-control").apply { isDaemon = true } })
+-    private val local = InetAddress.getByName(address).also {
+-        require(it.isLoopbackAddress || it.isSiteLocalAddress)
+-    }
+-    private val listener = ServerSocket(0, 4, local)
+-    private val token = ByteArray(24).also { SecureRandom().nextBytes(it) }
+-        .joinToString("") { "%02x".format(it.toInt() and 255) }
+-    private val host = "${local.hostAddress}:${listener.localPort}"
+-    val url = "http://$host/$token"
+-    private val acceptor = Thread({ serve() }, "hongguotv-phone-listener").apply { isDaemon = true; start() }
+-
+-    private fun serve() {
+-        try {
+-            while (!closed.get()) {
+-                val socket = listener.accept()
+-                clients.add(socket)
+-                try {
+-                    workers.execute {
+-                        try { socket.use { if (!closed.get()) handle(it) } }
+-                        catch (_: Exception) { /* Disconnected, malformed or expired request. */ }
+-                        finally { clients.remove(socket) }
+-                    }
+-                } catch (_: java.util.concurrent.RejectedExecutionException) {
+-                    clients.remove(socket)
+-                    socket.close()
+-                }
+-            }
+-        } catch (_: IOException) { /* close interrupts accept */ }
+-        finally { close() }
+-    }
+-
+-    override fun close() {
+-        if (!closed.compareAndSet(false, true)) return
+-        runCatching { listener.close() }
+-        clients.forEach { runCatching { it.close() } }
+-        clients.clear()
+-        workers.shutdownNow()
+-    }
+-
+-    internal fun awaitClosed(): Boolean {
+-        acceptor.join(2000)
+-        return !acceptor.isAlive && workers.awaitTermination(2, TimeUnit.SECONDS)
+-    }
+-
+-    private fun handle(socket: Socket) {
+-        if (!socket.inetAddress.let { it.isSiteLocalAddress || it.isLoopbackAddress }) return
+-        socket.soTimeout = 1500
+-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
+-        val input = socket.getInputStream().buffered()
+-        fun read(): Int {
+-            if (closed.get() || System.nanoTime() >= deadline) throw IOException("Request expired")
+-            return input.read()
+-        }
+-        fun line(max: Int): String {
+-            val out = ByteArrayOutputStream()
+-            while (out.size() < max) {
+-                val next = read()
+-                if (next < 0) throw IOException("EOF")
+-                if (next == 10) return out.toString("US-ASCII").trimEnd('\r')
+-                out.write(next)
+-            }
+-            throw IOException("Header too long")
+-        }
+-        val first = line(1024).split(' ')
+-        if (first.size != 3 || first[2] != "HTTP/1.1") return
+-        val headers = mutableMapOf<String, String>()
+-        var total = 0
+-        while (true) {
+-            val row = line(2048)
+-            total += row.length + 2
+-            if (total > 8192) return reply(socket, 431, "{}")
+-            if (row.isEmpty()) break
+-            val at = row.indexOf(':')
+-            if (at <= 0 || headers.put(row.substring(0, at).lowercase(Locale.ROOT), row.substring(at + 1).trim()) != null)
+-                return reply(socket, 400, "{}")
+-        }
+-        if (headers["host"] != host || first[1] !in listOf("/$token", "/$token/api"))
+-            return reply(socket, 404, "{}")
+-        if (headers["sec-fetch-site"] == "cross-site" ||
+-            (headers["origin"] != null && headers["origin"] != "http://$host"))
+-            return reply(socket, 403, "{}")
+-        if (first[0] == "GET" && first[1] == "/$token")
+-            return reply(socket, 200, PhoneControlPage.html(token), html = true)
+-        if (first[0] != "POST" || first[1] != "/$token/api") return reply(socket, 405, "{}")
+-        // Custom header + exact Origin prevent cross-site forms/fetch from issuing commands.
+-        if (headers["origin"] != "http://$host" || headers["x-control-request"] != "1")
+-            return reply(socket, 403, "{}")
+-        if (headers.containsKey("transfer-encoding") || headers["content-type"]?.substringBefore(';') != "application/json")
+-            return reply(socket, 400, "{}")
+-        val length = headers["content-length"]?.toIntOrNull()?.takeIf { it in 2..4096 }
+-            ?: return reply(socket, 413, "{}")
+-        val bytes = ByteArray(length)
+-        for (i in bytes.indices) { val b = read(); if (b < 0) return; bytes[i] = b.toByte() }
+-        val body = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull()
+-            ?: return reply(socket, 400, "{}")
+-        if (closed.get()) return
+-        val result = try { request(body) }
+-            catch (_: IllegalArgumentException) { JSONObject().put("error", "参数无效，请刷新页面重试") }
+-            catch (_: Exception) { JSONObject().put("error", "操作未完成，请稍后重试或检查电视状态") }
+-        val response = result.toString()
+-        if (response.toByteArray(Charsets.UTF_8).size > 256 * 1024)
+-            return reply(socket, 413, "{\"error\":\"结果过大，请缩小查询范围\"}")
+-        reply(socket, if (result.has("error")) 400 else 200, response)
+-    }
+-
+-    private fun reply(socket: Socket, code: Int, text: String, html: Boolean = false) {
+-        val bytes = text.toByteArray(Charsets.UTF_8)
+-        val headers = "HTTP/1.1 $code Response\r\nContent-Type: ${if (html) "text/html" else "application/json"}; charset=utf-8\r\n" +
+-            "Content-Length: ${bytes.size}\r\nConnection: close\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n" +
+-            "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-$token'; connect-src 'self'; img-src data: https:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\r\n"
+-        socket.getOutputStream().apply { write(headers.toByteArray(Charsets.US_ASCII)); write(bytes); flush() }
+-    }
+-}
+diff --git a/kotlin-tv/core/src/test/kotlin/com/hongguotv/core/PhoneControlServerTest.kt b/kotlin-tv/core/src/test/kotlin/com/hongguotv/core/PhoneControlServerTest.kt
+deleted file mode 100644
+index 40cf9a0..0000000
+--- a/kotlin-tv/core/src/test/kotlin/com/hongguotv/core/PhoneControlServerTest.kt
++++ /dev/null
+@@ -1,108 +0,0 @@
+-package com.hongguotv.core
+-
+-import java.net.Socket
+-import java.net.URI
+-import java.util.concurrent.CountDownLatch
+-import java.util.concurrent.TimeUnit
+-import java.util.concurrent.atomic.AtomicInteger
+-import org.json.JSONObject
+-import org.junit.Assert.*
+-import org.junit.Test
+-
+-class PhoneControlServerTest {
+-    private fun call(server: PhoneControlServer, body: String? = "{\"action\":\"status\"}",
+-        path: String? = null, origin: String? = URI(server.url).let { "http://${it.authority}" },
+-        host: String = URI(server.url).authority, extra: String = "", marker: Boolean = true): String {
+-        val uri = URI(server.url)
+-        return Socket("127.0.0.1", uri.port).use { socket ->
+-            socket.soTimeout = 3000
+-            val bytes = body?.toByteArray() ?: ByteArray(0)
+-            val headers = "${if (body == null) "GET" else "POST"} ${path ?: (uri.path + if (body == null) "" else "/api")} HTTP/1.1\r\nHost: $host\r\n" +
+-                (if (origin == null) "" else "Origin: $origin\r\n") +
+-                (if (marker) "X-Control-Request: 1\r\n" else "") + extra +
+-                "Content-Type: application/json\r\nContent-Length: ${bytes.size}\r\n\r\n"
+-            socket.getOutputStream().write(headers.toByteArray() + bytes)
+-            socket.getInputStream().readBytes().toString(Charsets.UTF_8)
+-        }
+-    }
+-
+-    @Test fun repeatedRequestsKeepSessionAndOnlyImagesAllowExternalHttps() {
+-        val calls = AtomicInteger()
+-        PhoneControlServer("127.0.0.1") { calls.incrementAndGet(); JSONObject().put("title", "测试") }.use { server ->
+-            val page = call(server, null, origin = null, marker = false)
+-            assertTrue(page.startsWith("HTTP/1.1 200"))
+-            assertTrue(page.contains("手机控制台"))
+-            assertTrue(page.contains("frame-ancestors 'none'"))
+-            assertTrue(page.contains("img-src data: https:;"))
+-            assertTrue(page.contains("Referrer-Policy: no-referrer"))
+-            assertTrue(page.contains("connect-src 'self'"))
+-            assertFalse(page.contains("<video"))
+-            assertFalse(page.contains("src=\"http"))
+-            repeat(30) { assertTrue(call(server).startsWith("HTTP/1.1 200")) }
+-            assertEquals(30, calls.get())
+-        }
+-    }
+-
+-    @Test fun credentialsAndOriginsAreRequiredBeforeCallingApplication() {
+-        val calls = AtomicInteger()
+-        PhoneControlServer("127.0.0.1") { calls.incrementAndGet(); JSONObject() }.use { server ->
+-            assertTrue(call(server, path = "/guess/api").contains("404 Response"))
+-            assertTrue(call(server, host = "evil.example").contains("404 Response"))
+-            assertTrue(call(server, origin = "http://evil.example").contains("403 Response"))
+-            assertTrue(call(server, origin = "null").contains("403 Response"))
+-            assertTrue(call(server, origin = null).contains("403 Response"))
+-            assertTrue(call(server, marker = false).contains("403 Response"))
+-            assertTrue(call(server, extra = "Sec-Fetch-Site: cross-site\r\n").contains("403 Response"))
+-            assertTrue(call(server, extra = "Transfer-Encoding: chunked\r\n").contains("400 Response"))
+-            assertTrue(call(server, extra = "Content-Length: 2\r\n").contains("400 Response"))
+-            assertTrue(call(server, body = "x".repeat(4097)).contains("413 Response"))
+-            assertTrue(call(server, body = "[]").contains("400 Response"))
+-            assertEquals(0, calls.get())
+-        }
+-    }
+-
+-    @Test fun slowBrowserDoesNotBlockControlAndCloseInterruptsReads() {
+-        val server = PhoneControlServer("127.0.0.1") { JSONObject().put("ok", true) }
+-        val uri = URI(server.url)
+-        val slow = Socket("127.0.0.1", uri.port)
+-        try {
+-            slow.getOutputStream().write("POST ".toByteArray())
+-            assertTrue(call(server).contains("200 Response"))
+-            server.close()
+-            assertTrue(server.awaitClosed())
+-            assertTrue(runCatching { call(server) }.isFailure)
+-        } finally { slow.close(); server.close() }
+-    }
+-
+-    @Test fun workerCountIsBoundedAndBlockedCallbacksAreInterrupted() {
+-        val entered = CountDownLatch(2)
+-        val hold = CountDownLatch(1)
+-        val active = AtomicInteger()
+-        val maximum = AtomicInteger()
+-        val server = PhoneControlServer("127.0.0.1") {
+-            val current = active.incrementAndGet()
+-            maximum.updateAndGet { maxOf(it, current) }
+-            entered.countDown()
+-            try { hold.await(5, TimeUnit.SECONDS) } finally { active.decrementAndGet() }
+-            JSONObject()
+-        }
+-        val callers = (1..10).map { Thread { runCatching { call(server) } }.apply { start() } }
+-        try {
+-            assertTrue(entered.await(2, TimeUnit.SECONDS))
+-            assertEquals(2, maximum.get())
+-            server.close()
+-            assertTrue(server.awaitClosed())
+-        } finally { hold.countDown(); server.close(); callers.forEach { it.join(4000) } }
+-        assertEquals(0, active.get())
+-    }
+-
+-    @Test fun restartRevokesOldTokenAndOversizedResponsesAreRejected() {
+-        var oldPath = ""
+-        PhoneControlServer("127.0.0.1") { JSONObject() }.use { oldPath = URI(it.url).path }
+-        PhoneControlServer("127.0.0.1") { JSONObject().put("data", "x".repeat(270000)) }.use { server ->
+-            assertNotEquals(oldPath, URI(server.url).path)
+-            assertTrue(call(server, path = "$oldPath/api").contains("404 Response"))
+-            assertTrue(call(server).contains("413 Response"))
+-        }
+-    }
+-}
